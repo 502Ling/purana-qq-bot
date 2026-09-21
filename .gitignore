@@ -1,0 +1,15 @@
+# 机密
+.env
+
+# 虚拟环境
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# 运行时产物
+data/
+logs/
+token_cache.json
