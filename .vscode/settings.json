@@ -1,7 +1,0 @@
-{
-  // 让编辑器认准项目自带的 venv，否则 Pylance 会报
-  // Import "aiohttp" could not be resolved（黄线）
-  "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
-  "python.terminal.activateEnvironment": true,
-  "python.analysis.extraPaths": ["${workspaceFolder}"]
-}
