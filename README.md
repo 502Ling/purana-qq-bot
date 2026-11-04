@@ -1,16 +1,33 @@
 # PURANA_ECUST
 
-QQ 机器人（Python 版）。定位是**门房**：
+> 自主设计的 **QQ 机器人代理网关（Agent Gateway）** —— 把 QQ 消息智能分流到「本地命令 / 本地 AI 网关 / 学校大模型网关」三路，双协议支持，生产可用。Python 从零实现，仅依赖 QQ 官方开放平台协议。
 
-- 斜杠命令（`/xxx`）→ 本地处理，**不转发**
-- 其他消息 → 转发给本机 OpenClaw 网关（由它负责设定、记忆、工具）
-- `/models` `/model` `/raw` → 直连**学校网关（ECUST）**的裸模型，**完全绕开 OpenClaw**
+**技术栈**：Python · asyncio · QQ 开放平台官方 WebSocket · OpenAI 兼容 API
+
+**核心特性**：
+- 🔀 **智能路由门房**：以 `router.py` 纯函数做消息分流——斜杠命令本地处理、普通对话转发 AI 网关、特定命令直连裸模型，职责单一、可测试
+- ⚡ **并发不堵**：消息后台并发分发（同人严格保序），慢消息先回执后答复（`msg_seq` 续接），体验流畅
+- 🔒 **权限与防刷**：命令权限分层 + 滑动窗口限流，非管理员动作被严格约束
+- ♻️ **健壮连接**：心跳 / 断线重连 / 鉴权 token 缓存，长连接稳定
+- 🔧 **兵器级工程配套**：开发自动重载（崩溃退避拉起）、隐藏后台常驻、错误日志分档提示、连通性诊断脚本
+
+**定位**：这是**自研的 QQ 机器人底座**（门房架构）。真正的"人格/记忆/工具"由转发到的 AI 网关承担，本仓库负责连接、路由、并发行、权限、运维。
+
+---
+
+## 架构
 
 ```
-手机QQ → QQ 平台 ──WS──▶ 本程序
-                          ├─ "/" 开头 → bot/commands.py 本地回
-                          └─ 其他     → bot/agent.py → localhost:18789 → 妮可
+手机QQ → QQ 开放平台 ──WebSocket──▶ 本程序
+                                     ├─ "/" 开头    → bot/commands.py   本地命令，不回
+                                     ├─ 其他消息     → bot/agent.py  → localhost:18789  本地 AI 网关（人格/记忆/工具）
+                                     └─ /models 等   → bot/ecust.py  → ECUST 大模型网关（裸模型，可配人设）
 ```
+
+三条路的职责划分：
+- **本地命令** —— 快、稳、不算模型，适合状态/诊断类
+- **本地 AI 网关**（默认主路）—— 完整人格 + 记忆 + 工具调用
+- **ECUST 裸模型**（可选）—— 不经网关直连学校大模型，按 openid 记住上文，供实验/切换/兜底
 
 ## 目录
 
@@ -23,13 +40,13 @@ bot/
   config.py         读 .env
   log.py            UTF-8 日志（本机 GBK 坑）
   router.py         分流判断（纯函数）
-  commands.py       斜杠命令表
+  commands.py       斜杠命令表 / 权限
   dispatch.py       消息并发分发（同人保序）
   reply.py          先回执后答复（慢消息不冷场）
   ratelimit.py      滑动窗口限流（/raw 防刷）
   keys.py           Esc 键监听（优雅退出）
-  agent.py          转发给 OpenClaw（= 妮可本人）
-  ecust.py          直连学校网关（裸模型，没人设/没记忆）
+  agent.py          转发给本地 AI 网关（= 人格）
+  ecust.py          直连学校网关（裸模型，可配人设）
   history.py        按用户存的对话历史（给裸模型记住上文）
   qq/
     auth.py         取 token + 缓存
@@ -75,7 +92,7 @@ python -m venv venv
 
 非管理员发管理类命令会被拒；`/raw` 对非管理员有防刷（`RAW_RATE_LIMIT` / `RAW_RATE_WINDOW`，默认 3 次/60 秒）。
 
-裸模型命令（打学校网关，回复**不是妮可**，但会记住上文）：
+裸模型命令（打学校网关，回复**不是本机人格**，但会记住上文）：
 
 - `/models` — 列出 ECUST 可用模型
 - `/model [名字]` — 查看 / 切换当前 ECUST 模型（按 openid 记忆）
@@ -107,11 +124,11 @@ QQ 里也可以用 `/ping` 快测当前模型。
 ## 后台常驻（关掉 VSCode 也照跑）
 
 双击 **`run_hidden.vbs`** 即可：以隐藏窗口后台启动（先跑 `run.cmd` → `dev.py` → `run.py`）。
-Windows 的 vbs 把进程挂在一个隐藏控制台上，跟你家网关（`gateway.vbs`）同款做法。
+Windows 的 vbs 把进程挂在一个隐藏控制台上。
 
 - 启动：双击 `run_hidden.vbs`
 - 停止：双击 `stop.cmd`（隐藏运行后没有 Esc 可用）
-- 看状态：双击 `status.cmd`（在不跑 + 两个日志的尾巴）
+- 看状态：双击 `status.cmd`（在看跑不跑 + 两个日志的尾巴）
 - 看日志：双击 `logs.cmd`（实时滚 `nico.log`）；`logs.cmd dev` 看 `data\dev.log`
 - 日志：`data\dev.log`（监督进程输出，UTF-8）+ `data\logs\nico.log`（bot 自己，UTF-8，2MB × 5 份轮转）
 
@@ -136,7 +153,7 @@ schtasks /create /tn "PURANA_ECUST Bot" /tr "wscript.exe \"D:\CIC\QQbot\PURANA_E
 
 - [x] 骨架 + 鉴权 + 长连接 + 心跳 + 重连
 - [x] 斜杠命令本地处理
-- [x] 非命令消息转发 OpenClaw（按 openid 分会话）
+- [x] 非命令消息转发本地 AI 网关（按 openid 分会话）
 - [x] ECUST 裸模型命令（/models /model /raw /forget /ping，带上下文记忆）
 - [x] 连通性诊断脚本 check_models.py
 - [x] Esc 优雅退出（bot/keys.py）
