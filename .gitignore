@@ -1,15 +1,32 @@
-# 机密
+# ===== 机密：真实密钥，绝不进版本库 =====
 .env
+*.secret
 
-# 虚拟环境
+# ===== 日志 / 运行时数据 =====
+data/
+logs/
+*.log
+token_cache.json
+
+# ===== 虚拟环境 =====
 venv/
 .venv/
 
-# Python
+# ===== Python 缓存 =====
 __pycache__/
 *.pyc
 
-# 运行时产物
-data/
-logs/
-token_cache.json
+# ===== 大体积 / 运行时资源（本地保留即可）=====
+resources/Illustration/
+resources/avatar/
+resources/Texture2D/
+resources/ChapterCover/
+
+# ===== 编辑器本地设置（各人各管）=====
+.vscode/
+.idea/
+
+# ===== Windows =====
+*.lnk
+*.bak
+Thumbs.db
