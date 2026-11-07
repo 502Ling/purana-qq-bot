@@ -5,7 +5,7 @@ import logging
 
 import aiohttp
 
-log = logging.getLogger("nico.qq.gateway")
+log = logging.getLogger("purana.qq.gateway")
 
 GATEWAY_URL = "https://api.sgroup.qq.com/gateway"
 

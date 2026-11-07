@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 
 import aiohttp
@@ -23,7 +24,7 @@ from bot.ecust import EcustClient
 from bot.history import History
 from bot.keys import wait_for_escape
 from bot.log import setup_logging
-from bot.qq.api import send_c2c
+from bot.qq.api import send_c2c, send_group_msg
 from bot.qq.auth import TokenManager
 from bot.qq.client import QQBotClient
 from bot.ratelimit import RateLimiter
@@ -67,8 +68,14 @@ async def main() -> bool:
 
     async with aiohttp.ClientSession() as session:
 
-        async def compute_reply(text: str, openid: str) -> tuple[str, bool]:
-            """算出回复文本，以及是否请求重启。"""
+        async def compute_reply(
+            text: str, openid: str, session_key: str
+        ) -> tuple[str, bool]:
+            """算出回复文本，以及是否请求重启。
+
+            openid 用于权限/记忆标识；session_key 是 agent 或 ECUST 记忆隔离用的键
+            （私聊=openid，群里=group_openid+member 组合，避免串上下文）。
+            """
             r = route(text)
             if r.kind == "command":
                 cmd = CommandContext(
@@ -88,18 +95,30 @@ async def main() -> bool:
             if settings.admin_openid and openid != settings.admin_openid:
                 return "FOX-2正在执行任务，不能陪你聊天喵~", False  # 白名单外的人不接
 
-            reply = await agent.ask(session, r.payload, settings.session_key(openid))
+            reply = await agent.ask(session, r.payload, session_key)
             return reply, False
 
-        async def handle_message(openid: str, text: str, msg_id: str) -> None:
+        async def handle_message(
+            scene: str,              # "c2c" 私聊 / "group" 群聊
+            openid: str,             # 用户标识（私聊=user_openid；群里=member_openid）
+            group_openid: str,       # 群聊才有的群 OpenID；私聊为空
+            text: str,
+            msg_id: str,
+            session_key: str,        # agent/ECUST 记忆隔离键
+        ) -> None:
             async def sender(message: str, seq: int) -> None:
                 token = await tokens.get(session)
-                await send_c2c(session, token, openid, message, msg_id, msg_seq=seq)
+                if scene == "group":
+                    await send_group_msg(
+                        session, token, group_openid, message, msg_id, msg_seq=seq
+                    )
+                else:
+                    await send_c2c(session, token, openid, message, msg_id, msg_seq=seq)
 
             flag: dict[str, bool] = {}
 
             async def reply_coro() -> str:
-                reply, restart = await compute_reply(text, openid)
+                reply, restart = await compute_reply(text, openid, session_key)
                 flag["restart"] = restart
                 return reply
 
@@ -110,16 +129,35 @@ async def main() -> bool:
                 log.info("收到 /restart，正在退出以便重启…")
                 restart_event.set()
 
-        async def on_event(event: dict) -> None:
-            if event["type"] != "C2C_MESSAGE_CREATE":
-                return
+        # 群里被 @ 的消息，content 里会带 <@!bot_appid> 之类的占位符，剥掉
+        AT_MENTION_RE = re.compile(r"<@![^>]*>")
 
+        async def on_event(event: dict) -> None:
+            event_type = event["type"]
             data = event["data"]
-            openid = (data.get("author") or {}).get("user_openid")
-            text = data.get("content") or ""
             msg_id = data.get("id") or ""
 
-            if not openid or not text or not msg_id:
+            if event_type == "C2C_MESSAGE_CREATE":
+                author = data.get("author") or {}
+                openid = author.get("user_openid")
+                text = data.get("content") or ""
+                scene, group_openid = "c2c", ""
+                session_key = openid
+                label = "私聊"
+            elif event_type in ("GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"):
+                author = data.get("author") or {}
+                openid = author.get("member_openid")
+                group_openid = data.get("group_openid") or ""
+                text = data.get("content") or ""
+                scene = "group"
+                session_key = f"{group_openid}:{openid}"
+                label = "群聊"
+            else:
+                return
+
+            if not openid or not text or not msg_id or (
+                scene == "group" and not group_openid
+            ):
                 log.debug("消息字段不完整，忽略")
                 return
             if msg_id in seen:
@@ -129,12 +167,27 @@ async def main() -> bool:
             if len(seen) > 1000:
                 seen.clear()
 
-            log.info("收到私聊 openid=%s：%s", openid[:10], text[:60])
+            # 群里没 @ 机器人的普通消息：目前静默不回复（占个位，后续可接复读机等）
+            if event_type == "GROUP_MESSAGE_CREATE":
+                return
+
+            # 群里被 @ 时剥离占位符，别把 <@!xxx> 当正文喂给模型
+            if scene == "group":
+                text = AT_MENTION_RE.sub("", text).strip()
+                if not text:
+                    return
+
+            log.info("收到%s %s：%s", label, scene == "group" and f"group={group_openid[:100]}" or f"openid={openid[:10]}", text[:60])
             # 关键：丢给后台就立刻返回，收消息的循环不再被堵住
-            dispatcher.spawn(openid, handle_message(openid, text, msg_id))
+            # 群里按 group 保序（同一个群的消息顺序发送），私聊按 openid
+            lock_key = group_openid if scene == "group" else openid
+            dispatcher.spawn(
+                lock_key,
+                handle_message(scene, openid, group_openid, text, msg_id, session_key),
+            )
 
         client = QQBotClient(session, tokens, on_event)
-        if os.getenv("NICO_NO_ESC") == "1":
+        if os.getenv("PURANA_NO_ESC") == "1":
             log.info("已就绪（在 dev.py 监督下运行，退出请按那里的 Esc）")
         else:
             log.info("已就绪：按 Esc 退出（Ctrl+C 也可以）")
@@ -179,7 +232,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if should_restart:
-        if os.getenv("NICO_SUPERVISED") == "1":
+        if os.getenv("PURANA_SUPERVISED") == "1":
             print("重启交给 dev.py 处理，本进程退出。")
         else:
             print("重启中…")

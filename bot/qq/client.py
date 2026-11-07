@@ -21,7 +21,7 @@ import aiohttp
 from .auth import TokenManager
 from .gateway import get_ws_url
 
-log = logging.getLogger("nico.qq.client")
+log = logging.getLogger("purana.qq.client")
 
 INTENTS = 1 << 25  # 私聊 + 群聊事件
 RECONNECT_DELAY = 5  # 秒

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import aiohttp
 
-log = logging.getLogger("nico.qq.auth")
+log = logging.getLogger("purana.qq.auth")
 
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 EXPIRE_MARGIN = 60  # 提前 60 秒过期，避免临界点

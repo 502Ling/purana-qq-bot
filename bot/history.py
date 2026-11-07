@@ -9,7 +9,7 @@ import json
 import logging
 from pathlib import Path
 
-log = logging.getLogger("nico.history")
+log = logging.getLogger("purana.history")
 
 MAX_MESSAGES = 20  # 每个用户最多保留的条数（约 10 轮对话）
 

@@ -8,9 +8,9 @@
 行为：
 - 保存任意 ``.py`` / ``.env`` → 自动重启（venv / __pycache__ / data 不监视）
 - 子进程自己崩了 → 自动拉起，且退避重试（1→2→4→8→16→30s 封顶）
-- 按 **Esc** → 退出（并关掉子进程）；隐藏窗口跑时不监听（run.cmd 设 NICO_NO_ESC=1）
-- 子进程里 Esc 退出被禁用（注入 NICO_NO_ESC=1），免得两个进程抢键盘
-- 同时注入 NICO_SUPERVISED=1，子进程的 ``/restart`` 会交给本进程拉起
+- 按 **Esc** → 退出（并关掉子进程）；隐藏窗口跑时不监听（run.cmd 设 PURANA_NO_ESC=1）
+- 子进程里 Esc 退出被禁用（注入 PURANA_NO_ESC=1），免得两个进程抢键盘
+- 同时注入 PURANA_SUPERVISED=1，子进程的 ``/restart`` 会交给本进程拉起
 """
 from __future__ import annotations
 
@@ -56,10 +56,10 @@ def snapshot() -> dict[str, float]:
 def esc_listener(stop: threading.Event) -> None:
     """按 Esc → 退出监督进程。
 
-    隐藏窗口跑（run.cmd 会设 NICO_NO_ESC=1）或不是交互式终端时不监听——
+    隐藏窗口跑（run.cmd 会设 PURANA_NO_ESC=1）或不是交互式终端时不监听——
     免得在看不见的控制台里被莫名其妙的按键/EOF 触发退出。
     """
-    if os.getenv("NICO_NO_ESC") == "1":
+    if os.getenv("PURANA_NO_ESC") == "1":
         return
     if not (sys.stdin and sys.stdin.isatty()):
         return
@@ -94,7 +94,7 @@ def main() -> int:
     threading.Thread(target=esc_listener, args=(stop,), daemon=True).start()
 
     env = dict(
-        os.environ, NICO_NO_ESC="1", NICO_SUPERVISED="1", PYTHONIOENCODING="utf-8"
+        os.environ, PURANA_NO_ESC="1", PURANA_SUPERVISED="1", PYTHONIOENCODING="utf-8"
     )
     child: subprocess.Popen | None = None
 

@@ -14,7 +14,7 @@ import aiohttp
 
 from .log import describe_exc, exc_kind, short
 
-log = logging.getLogger("nico.ecust")
+log = logging.getLogger("purana.ecust")
 
 # 出错时给用户看的话（普拉娜那边比较平静，日志里另有详细版）
 FRIENDLY = {

@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Awaitable, Callable
 
-log = logging.getLogger("nico.reply")
+log = logging.getLogger("purana.reply")
 
 Send = Callable[[str, int], Awaitable[None]]  # send(文本, msg_seq)
 

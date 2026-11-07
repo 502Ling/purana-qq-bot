@@ -9,7 +9,7 @@ import aiohttp
 
 from .log import describe_exc, exc_kind, short
 
-log = logging.getLogger("nico.agent")
+log = logging.getLogger("purana.agent")
 
 TIMEOUT = aiohttp.ClientTimeout(total=180)
 

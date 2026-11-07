@@ -13,8 +13,8 @@ echo --- data\dev.log tail ---
 powershell -NoProfile -Command "if (Test-Path '%~dp0data\dev.log') { Get-Content -LiteralPath '%~dp0data\dev.log' -Tail 5 -Encoding UTF8 } else { Write-Host '(no dev.log yet)' }"
 
 echo.
-echo --- data\logs\nico.log tail ---
-powershell -NoProfile -Command "if (Test-Path '%~dp0data\logs\nico.log') { Get-Content -LiteralPath '%~dp0data\logs\nico.log' -Tail 8 -Encoding UTF8 } else { Write-Host '(no nico.log yet)' }"
+echo --- data\logs\purana.log tail ---
+powershell -NoProfile -Command "if (Test-Path '%~dp0data\logs\purana.log') { Get-Content -LiteralPath '%~dp0data\logs\purana.log' -Tail 8 -Encoding UTF8 } else { Write-Host '(no purana.log yet)' }"
 
 echo.
 pause

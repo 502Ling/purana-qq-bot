@@ -12,15 +12,15 @@ import sys
 import threading
 import time
 
-log = logging.getLogger("nico.keys")
+log = logging.getLogger("purana.keys")
 
 ESC = "\x1b"
 
 
 async def wait_for_escape(poll: float = 0.05) -> None:
     """等用户按 Esc 键（阻塞直到按下）。不支持的环境则一直等下去。"""
-    if os.getenv("NICO_NO_ESC") == "1":
-        log.info("NICO_NO_ESC=1，Esc 监听已禁用（由 dev.py 那样的监督进程接管）")
+    if os.getenv("PURANA_NO_ESC") == "1":
+        log.info("PURANA_NO_ESC=1，Esc 监听已禁用（由 dev.py 那样的监督进程接管）")
         await asyncio.Event().wait()
         return
 

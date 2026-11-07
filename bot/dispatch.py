@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
-log = logging.getLogger("nico.dispatch")
+log = logging.getLogger("purana.dispatch")
 
 
 class Dispatcher:

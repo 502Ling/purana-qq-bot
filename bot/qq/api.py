@@ -1,13 +1,14 @@
-"""发消息（目前只有私聊 C2C）。"""
+"""发消息（私聊 C2C + 群聊）。"""
 from __future__ import annotations
 
 import logging
 
 import aiohttp
 
-log = logging.getLogger("nico.qq.api")
+log = logging.getLogger("purana.qq.api")
 
 C2C_URL = "https://api.sgroup.qq.com/v2/users/{openid}/messages"
+GROUP_URL = "https://api.sgroup.qq.com/v2/groups/{group_openid}/messages"
 
 
 async def send_c2c(
@@ -32,7 +33,43 @@ async def send_c2c(
         json=payload,
         headers={"Authorization": f"QQBot {token}"},
     ) as resp:
+        status = resp.status
         body = await resp.text()
 
-    log.info("已发送私聊消息（HTTP %s）", resp.status)
-    log.debug("发送结果：%s", body[:200])
+    log.info("已发送私聊消息（HTTP %s）", status)
+    if status >= 400:
+        log.warning("私聊发送失败 %s：%s", status, body[:200])
+    else:
+        log.debug("发送结果：%s", body[:200])
+
+
+async def send_group_msg(
+    session: aiohttp.ClientSession,
+    token: str,
+    group_openid: str,
+    content: str,
+    msg_id: str = "",
+    msg_seq: int = 1,
+) -> None:
+    """发一条群聊文本。
+
+    QQ 官方群聊被动回复：5 分钟内有效、每条消息最多回 5 次；
+    带 msg_id 即被动回复，不带是主动消息（频控更严）。
+    """
+    payload = {"content": content, "msg_type": 0, "msg_seq": msg_seq}
+    if msg_id:
+        payload["msg_id"] = msg_id
+
+    async with session.post(
+        GROUP_URL.format(group_openid=group_openid),
+        json=payload,
+        headers={"Authorization": f"QQBot {token}"},
+    ) as resp:
+        status = resp.status
+        body = await resp.text()
+
+    log.info("已发送群消息（HTTP %s，group=%s…）", status, str(group_openid)[:10])
+    if status >= 408:
+        log.warning("群消息发送失败 %s：%s", status, body[:200])
+    else:
+        log.debug("发送结果：%s", body[:200])
