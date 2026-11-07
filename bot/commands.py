@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -23,25 +24,32 @@ def fmt_delta(delta: timedelta) -> str:
     return f"{minutes} 分钟"
 
 
+CHOOSE_MAX = 10  # /choose 最多接受的选项数量
+
 HELP_TEXT = """可用命令：
-/test502 - 测试机器人是否在线
+/echo <内容> - 复读你输入的内容
 /time - 显示当前时间（含 Phigros 4.0 倒计时）
-/raw <内容> - 和普拉娜聊天（会记住上文）
-/forget - 清空你和普拉娜的对话记忆
+/choose <选项1> <选项2> [...] - 从选项里随机选一个（最多 {CHOOSE_MAX} 个）
 /help - 显示本帮助
 —— 以下仅管理员 ——
-/echo <内容> - 复读你输入的内容
+/test502 - 测试机器人是否在线
+/raw <内容> - 和普拉娜聊天（会记住上文）
+/forget - 清空你和普拉娜的对话记忆
 /models - 列出学校网关(ECUST)的可用模型
 /model [名字] - 查看 / 切换 ECUST 模型
 /ping - 测当前 ECUST 模型连通性（不记入上下文）
-/restart - 重启机器人"""
+/restart - 重启机器人""".format(CHOOSE_MAX=CHOOSE_MAX)
 
-# 非管理员也能用的命令（其余仅管理员）。可用 .env 的 PUBLIC_COMMANDS 覆盖。
-PUBLIC_COMMANDS = {
-    c.strip().lower()
-    for c in os.getenv("PUBLIC_COMMANDS", "help,test502,time,raw,forget").split(",")
-    if c.strip()
-}
+
+# 公开命令白名单（非管理员也能用），其余默认仅管理员。可用 .env 的
+# PUBLIC_COMMANDS 覆盖（逗号分隔）。做成函数式读取：模块级读会在 config 的
+# load_dotenv 之前执行（bot.commands 常先于 bot.config 被 import），会让 .env 覆盖失效。
+def public_commands() -> set[str]:
+    return {
+        c.strip().lower()
+        for c in os.getenv("PUBLIC_COMMANDS", "help,time,choose,echo").split(",")
+        if c.strip()
+    }
 
 
 @dataclass
@@ -71,12 +79,22 @@ async def handle(text: str, ctx: CommandContext) -> str:
         return "输入 /help 查看可用指令"
     name, args = parts[0].lower(), parts[1:]
 
-    # A：管理类命令只给管理员（/help /time /raw /forget 等公开命令例外）
-    if not ctx.is_admin and name not in PUBLIC_COMMANDS:
+    # A：管理类命令只给管理员（public_commands() 里的公开命令例外）
+    if not ctx.is_admin and name not in public_commands():
         return f"只有管理员能用 /{name}。你可以用 /raw 找普拉娜聊天 🦊"
 
     if name == "test502":
         return "Here is FOX-2!"
+    if name == "choose":
+        # 从选项里随机选一个（/choose 甲 乙 丙 ...），对齐 Nico_21599 行为
+        nums = len(args)
+        if nums == 0:
+            return "用法：/choose <选项1> <选项2> [...]"
+        if nums == 1:
+            return "老师...一个选项也会犯难吗？"
+        if nums > CHOOSE_MAX:
+            return f"选项太多了（最多 {CHOOSE_MAX} 个），普拉娜也要搞晕了..."
+        return random.choice(args)
     if name == "echo":
         return " ".join(args) if args else "用法：/echo <要复读的内容>"
     if name == "time":

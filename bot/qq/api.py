@@ -50,15 +50,19 @@ async def send_group_msg(
     content: str,
     msg_id: str = "",
     msg_seq: int = 1,
+    msg_ref_id: str = "",
 ) -> None:
     """发一条群聊文本。
 
     QQ 官方群聊被动回复：5 分钟内有效、每条消息最多回 5 次；
     带 msg_id 即被动回复，不带是主动消息（频控更严）。
+    msg_ref_id 若给，就带上 message_reference 显式引用那条消息（形如 REFIDX_xxx）。
     """
     payload = {"content": content, "msg_type": 0, "msg_seq": msg_seq}
     if msg_id:
         payload["msg_id"] = msg_id
+    if msg_ref_id:
+        payload["message_reference"] = {"message_id": msg_ref_id}
 
     async with session.post(
         GROUP_URL.format(group_openid=group_openid),

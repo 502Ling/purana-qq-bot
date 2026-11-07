@@ -105,12 +105,14 @@ async def main() -> bool:
             text: str,
             msg_id: str,
             session_key: str,        # agent/ECUST 记忆隔离键
+            msg_ref_id: str = "",    # 群里被 @ 时，要引用的那条消息 REFIDX（可选）
         ) -> None:
             async def sender(message: str, seq: int) -> None:
                 token = await tokens.get(session)
                 if scene == "group":
                     await send_group_msg(
-                        session, token, group_openid, message, msg_id, msg_seq=seq
+                        session, token, group_openid, message, msg_id,
+                        msg_seq=seq, msg_ref_id=msg_ref_id,
                     )
                 else:
                     await send_c2c(session, token, openid, message, msg_id, msg_seq=seq)
@@ -132,6 +134,20 @@ async def main() -> bool:
         # 群里被 @ 的消息，content 里会带 <@!bot_appid> 之类的占位符，剥掉
         AT_MENTION_RE = re.compile(r"<@![^>]*>")
 
+        def extract_msg_ref_id(data: dict) -> str:
+            """从群事件里抠出要引用的消息 REFIDX（MSGExt 的 msg_idx=REFIDX_...）。
+
+            QQ 官方群消息事件把「引用哪条消息」放在
+            data.message_scene.ext[]（形如 "msg_idx=REFIDX_xxx"/"auth_token=..."）里，
+            拿到的 REFIDX 传给发群消息接口的 message_reference.message_id 即可实现引用回复。
+            """
+            scene = data.get("message_scene") or {}
+            for item in scene.get("ext") or []:
+                s = str(item)
+                if s.startswith("msg_idx="):
+                    return s[len("msg_idx="):].strip()
+            return ""
+
         async def on_event(event: dict) -> None:
             event_type = event["type"]
             data = event["data"]
@@ -144,6 +160,7 @@ async def main() -> bool:
                 scene, group_openid = "c2c", ""
                 session_key = openid
                 label = "私聊"
+                msg_ref_id = ""
             elif event_type in ("GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"):
                 author = data.get("author") or {}
                 openid = author.get("member_openid")
@@ -152,6 +169,7 @@ async def main() -> bool:
                 scene = "group"
                 session_key = f"{group_openid}:{openid}"
                 label = "群聊"
+                msg_ref_id = extract_msg_ref_id(data)
             else:
                 return
 
@@ -183,7 +201,7 @@ async def main() -> bool:
             lock_key = group_openid if scene == "group" else openid
             dispatcher.spawn(
                 lock_key,
-                handle_message(scene, openid, group_openid, text, msg_id, session_key),
+                handle_message(scene, openid, group_openid, text, msg_id, session_key, msg_ref_id),
             )
 
         client = QQBotClient(session, tokens, on_event)
