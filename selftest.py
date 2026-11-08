@@ -159,6 +159,55 @@ def test_bili_extract() -> None:
     check("文本格式含标题和链接",
           "某视频" in text and "BV1xx411c7mD" in text, f"实际 {text}")
 
+    # 10) 默认**不带** URL（QQ 会把链接渲染成小程序预览）
+    check("默认不带链接", "https://" not in text, f"实际 {text}")
+
+    # 11) BV 号单独一行、不带前缀（双击就能复制）
+    lines = text.split("\n")
+    check("BV号单独一行", "BV1xx411c7mD" in lines, f"实际 {lines}")
+    check("BV号行无前缀", all(
+        not l.startswith("BV号") for l in lines
+    ), f"实际 {lines}")
+
+    # 12) with_link=True 才带链接
+    text2 = bili.format_video({
+        "title": "某视频", "url": "https://www.bilibili.com/video/BV1xx411c7mD",
+    }, with_link=True)
+    check("with_link=True 带链接", "https://www.bilibili.com" in text2, f"实际 {text2}")
+
+
+async def test_admin_ids() -> None:
+    print("\n== 管理员 openid 多值匹配 ==")
+    from bot.commands import CommandContext, handle
+
+    # 群里的 member_openid 和私聊的 user_openid 不一样，
+    # 白名单里填哪个都得能匹配上
+    ctx = CommandContext(
+        openid="MEMBER_OPENID",
+        is_admin=True,
+        author_ids=("AUTHOR_ID", "USER_OPENID", "MEMBER_OPENID"),
+    )
+    out = await handle("/whoami", ctx)
+    check("whoami 列出所有标识",
+          "AUTHOR_ID" in out and "USER_OPENID" in out and "MEMBER_OPENID" in out,
+          f"实际 {out}")
+    check("whoami 没有空行异常", "\n\n\n" not in out, f"实际 {out}")
+
+    # 非管理员跑 /bili → 拒绝
+    ctx2 = CommandContext(openid="X", is_admin=False, is_group=True, group_openid="G")
+    out2 = await handle("/bili", ctx2)
+    check("非管理员 /bili 被拒", "管理员" in out2, f"实际 {out2}")
+
+    # 管理员跑 /bili → 正常
+    ctx3 = CommandContext(openid="X", is_admin=True, is_group=True, group_openid="G")
+    out3 = await handle("/bili", ctx3)
+    check("管理员 /bili 正常", "B站识别" in out3, f"实际 {out3}")
+
+    # /whoami 是公开命令，非管理员也能用
+    ctx4 = CommandContext(openid="X", is_admin=False, author_ids=("U2",))
+    out4 = await handle("/whoami", ctx4)
+    check("非管理员可用 /whoami", "U2" in out4, f"实际 {out4}")
+
 
 def test_switch() -> None:
     print("\n== B站开关 ==")
@@ -191,6 +240,7 @@ async def main() -> int:
     await test_repeat()
     test_bili_extract()
     test_switch()
+    await test_admin_ids()
     print()
     if FAILED:
         print(f"❌ {FAILED} 项失败")

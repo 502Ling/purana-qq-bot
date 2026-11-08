@@ -30,6 +30,7 @@ HELP_TEXT = """可用命令：
 /echo <内容> - 复读你输入的内容
 /time - 显示当前时间（含 Phigros 4.0 倒计时）
 /choose <选项1> <选项2> [...] - 从选项里随机选一个（最多 {CHOOSE_MAX} 个）
+/whoami - 显示你的 openid（加管理员白名单用）
 /help - 显示本帮助
 —— 以下仅管理员 ——
 /test502 - 测试机器人是否在线
@@ -38,7 +39,7 @@ HELP_TEXT = """可用命令：
 /models - 列出学校网关(ECUST)的可用模型
 /model [名字] - 查看 / 切换 ECUST 模型
 /ping - 测当前 ECUST 模型连通性（不记入上下文）
-/bili - 查看 / 开关本群的 B 站识别（群聊专属）
+/bili - 查看 / 开关本群的 B 站识别
 /restart - 重启机器人""".format(CHOOSE_MAX=CHOOSE_MAX)
 
 
@@ -48,7 +49,7 @@ HELP_TEXT = """可用命令：
 def public_commands() -> set[str]:
     return {
         c.strip().lower()
-        for c in os.getenv("PUBLIC_COMMANDS", "help,time,choose,echo").split(",")
+        for c in os.getenv("PUBLIC_COMMANDS", "help,time,choose,echo,whoami").split(",")
         if c.strip()
     }
 
@@ -69,6 +70,9 @@ class CommandContext:
     bili_switch: object = None                  # bot.bili.BiliSwitch（/bili 按群开关）
     group_openid: str = ""                      # 群聊才有（/bili 是按群开关）
     is_group: bool = False                      # 当前是不是群聊
+    user_openid: str = ""                       # 私聊场景的用户 openid（群里没这个值）
+    admin_openids: tuple[str, ...] = ()         # 管理员白名单（可以有多个）
+    author_ids: tuple[str, ...] = ()            # 本条消息里能拿到的所有用户标识
 
 
 def current_model(ctx: CommandContext) -> str:
@@ -112,6 +116,8 @@ async def handle(text: str, ctx: CommandContext) -> str:
         return res
     if name == "help":
         return HELP_TEXT
+    if name == "whoami":
+        return await _handle_whoami(ctx)
     if name == "bili":
         return await _handle_bili(args, ctx)
     if name == "restart":
@@ -122,6 +128,25 @@ async def handle(text: str, ctx: CommandContext) -> str:
     if name in ("models", "model", "raw", "forget", "ping"):
         return await _handle_ecust(name, args, ctx)
     return f"未知命令 /{name}，输入 /help 查看可用指令"
+
+
+async def _handle_whoami(ctx: CommandContext) -> str:
+    """/whoami —— 显示当前会话里的各个 openid。
+
+    为什么要这个：官方协议里**私聊用 user_openid、群里用 member_openid**，
+    两个值不一样，但只看到其中一个时很容易搞错。
+    这个命令把所有能拿到的标识都列出来，方便挑一个填进 ADMIN_OPENID。
+    """
+    ids = [i for i in (ctx.author_ids or ()) if i]
+    if not ids:
+        return "拿不到你的标识……（可能是官方那边没下发）"
+    lines = ["你的标识（复制其中一个填到 .env 的 ADMIN_OPENID）："]
+    for i in ids:
+        lines.append(i)
+    lines.append("")
+    lines.append("提醒：私聊用 user_openid，群里用 member_openid，两者不一样。")
+    lines.append("ADMIN_OPENID 可以写多个，用逗号隔开。")
+    return "\n".join(lines)
 
 
 async def _handle_bili(args: list[str], ctx: CommandContext) -> str:

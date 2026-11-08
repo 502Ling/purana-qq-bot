@@ -101,7 +101,8 @@ python -m venv venv
 - `/model [名字]` — 查看 / 切换当前 ECUST 模型（按 openid 记忆）
 - `/raw <内容>` — 用当前 ECUST 模型回答（带上下文，最近 20 条）
 - `/ping` — 测当前 ECUST 模型连通性（不记入上下文）
-- `/bili` — 查看 / 开关本群的 B站识别（仅管理员，群聊专属）
+- `/bili` — 查看 / 开关本群的 B站识别（仅管理员）
+- `/whoami` — 显示你的 openid（加管理员白名单用）
 - `/restart` — 重启机器人（仅管理员；无白名单时所有人都是管理员）
 
 对话历史存在 `data/ecust_history.json`；人设可用 `.env` 的 `ECUST_SYSTEM_PROMPT` 配。
@@ -124,14 +125,23 @@ python -m venv venv
 
 ### B站分享识别（`bot/bili.py`）
 
-消息里带 B 站链接 → 自动查视频信息 → 发**图文卡片**（标题 / UP / 时长 / 封面 / 链接）。
+消息里带 B 站链接 → 自动查视频信息 → 回复**纯文本**：
 
+```
+某视频标题
+UP：某某某　时长：3:21
+BV1GUH56pEHj
+```
+
+- **BV 号单独一行、不加任何前缀** → 在 QQ 里双击就能复制 → 粘到 B 站 APP 里直接搜
+- **默认不带 URL**：QQ 会把 bilibili.com 的链接渲染成小程序预览（点进去是 B 站小程序，
+  不是 APP），而这里的目的就是拿到能复制的 BV 号。需要链接时置 `BILI_LINK=1`
+- 想发图文卡片（带封面）置 `BILI_CARD=1`（默认 0）
 - 官方协议**没有** OneBot 那套 `raw_message` / CQ 码，所以不能照抄 Nico 版。
   这里的做法是**在事件数据里到处找链接**：`content` / `ark_data.fields.jump_url` /
   `msg_elements[]`（引用消息）/ `attachments[].url`
 - 短链（b23.tv）跟一次 302 拿 BV 号（只读 Location，不下载页面）；结果按短链缓存
-- 拿不到封面（没接口 / 接口挂了）→ 退回发纯文本，**不会让整条消息发不出去**
-- 卡片发失败（没权限 / 字段不合法）→ 自动退回纯文本重发
+- 拿不到封面 / 卡片发失败 → 自动退回纯文本，**不会让整条消息发不出去**
 
 开关（`.env`）：
 
@@ -141,9 +151,31 @@ python -m venv venv
 | `BILI_MODE` | `black`（默认，默认开）/ `white`（默认关，只开名单里的群） |
 | `BILI_OFF_GROUPS` | 黑名单初值（群 openid，逗号分隔） |
 | `BILI_ONLY_GROUPS` | 白名单初值 |
+| `BILI_CARD` | `1` = 发图文卡片；默认 `0` = 发纯文本 |
+| `BILI_LINK` | `1` = 回复里带完整 URL；默认 `0` |
 
 名单持久化在 `data/bili_off.json`，运行时用 `/bili on` / `/bili off` 改（仅管理员）。
 私聊不受按群开关影响（只看总闸）。
+
+### 群里发命令
+
+群里**不 @ 机器人**也能发命令：
+
+- **管理员**（群主 / 群管理员 / openid 白名单）→ 任何命令都响应
+- **其他人** → 只响应 `GROUP_COMMANDS` 里列的公开命令（默认 `help,time,choose,echo,whoami`）
+- 不在允许范围内的 → **静默忽略**（不在群里刷屏说「只有管理员能用」）
+
+### 管理员怎么判（两条路，任一成立就算）
+
+1. **群角色**：官方事件的 `author.member_role` 是 `owner`（群主）/ `admin`（管理员）
+   → 直接就是管理员。群里最可靠的判据。
+2. **openid 白名单**：`.env` 的 `ADMIN_OPENID`，**可以写多个**（逗号分隔）。
+
+⚠️ 官方协议里同一个人在**私聊和群里是两个不同的 openid**（私聊 `user_openid` /
+群里 `member_openid`），只有 `author.id` 是跨场景稳定的。所以白名单比对时会拿
+`author.id` / `user_openid` / `member_openid` 三个候选值去撞，填哪个都能命中。
+
+不确定自己的 openid 就在 QQ 里发 `/whoami`，会把当前能拿到的所有标识都列出来。
 
 ### 群聊上下文隔离
 

@@ -234,8 +234,16 @@ async def parse_event(
     return info
 
 
-def format_video(info: dict) -> str:
-    """视频信息 → 文本（当卡片发不出去时的兜底）。"""
+def format_video(info: dict, with_link: bool = False) -> str:
+    """视频信息 → 纯文本。
+
+    BV 号**单独一行且不加任何前缀**，方便在 QQ 里双击复制 → 粘到 APP 里搜索。
+    前面加了「BV号：」这种字样的话，复制出来就带着前缀，APP 搜不到。
+
+    with_link 默认 False：**不带 URL**。QQ 会把 bilibili.com 的链接渲染成
+    小程序预览（点进去是 B 站小程序，不是 APP），而这里的目的就是拿到能复制的
+    BV 号，所以别把链接塞进来。需要链接时置 BILI_LINK=1。
+    """
     lines = []
     if info.get("title"):
         lines.append(info["title"])
@@ -246,7 +254,17 @@ def format_video(info: dict) -> str:
         meta.append(f"时长：{info['duration']}")
     if meta:
         lines.append("　".join(meta))
-    lines.append(info.get("url") or f"https://www.bilibili.com/video/{info.get('bvid','')}")
+    # BV 号单独一行，纯裸号
+    bvid = (info.get("bvid") or "").strip()
+    if not bvid:
+        # 兼底：info 里没 bvid 就从 url 里提
+        m = _BV_RE.search(info.get("url") or "")
+        if m:
+            bvid = m.group(0)
+    if bvid:
+        lines.append(bvid)
+    if with_link:
+        lines.append(info.get("url") or f"https://www.bilibili.com/video/{bvid}")
     return "\n".join(lines)
 
 

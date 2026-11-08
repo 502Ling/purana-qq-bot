@@ -76,10 +76,38 @@ async def main() -> bool:
     dispatcher = Dispatcher(MAX_CONCURRENT)
     rate_limit = RateLimiter(RAW_RATE_LIMIT, RAW_RATE_WINDOW)
 
+    def is_admin_of(
+        author_ids: tuple[str, ...],
+        member_role: str = "",
+        scene: str = "group",
+    ) -> bool:
+        """这个人是不是管理员。
+
+        两条路，任一成立就算：
+        1. **群角色**：群里 author.member_role 是 owner/admin → 群主/群管理员就是管理员。
+           这是群里最可靠的判据。
+        2. **openid 白名单**：官方协议里同一个人在**私聊和群里是两个不同的 openid**
+           （私聊 user_openid / 群里 member_openid），只有 author.id 是跨场景稳定的。
+           所以这里拿一组候选标识去比对白名单，填哪个都能命中。
+
+        没设白名单 = 所有人都算管理员（保留原来的宽松行为）。
+        """
+        if scene == "group" and str(member_role or "").lower() in ("owner", "admin"):
+            return True
+        if not settings.admin_openids:
+            return True
+        return any(a and a in settings.admin_openids for a in author_ids)
+
     async with aiohttp.ClientSession() as session:
 
         async def compute_reply(
-            text: str, openid: str, session_key: str, scene: str, group_openid: str
+            text: str,
+            openid: str,
+            session_key: str,
+            scene: str,
+            group_openid: str,
+            author_ids: tuple[str, ...],
+            member_role: str = "",
         ) -> tuple[str, bool]:
             """算出回复文本，以及是否请求重启。
 
@@ -95,17 +123,17 @@ async def main() -> bool:
                     models=ecust_models,
                     history=history,
                     system=settings.ecust_system_prompt,
-                    # 没设白名单 = 所有人都算管理员（跟转发逻辑保持一致）
-                    is_admin=not settings.admin_openid
-                    or openid == settings.admin_openid,
+                    is_admin=is_admin_of(author_ids, member_role, scene),
                     rate_limit=rate_limit,
                     bili_switch=bili_switch,
                     group_openid=group_openid,
                     is_group=scene == "group",
+                    author_ids=author_ids,
+                    admin_openids=settings.admin_openids,
                 )
                 return await handle_command(r.payload, cmd), cmd.restart_requested
 
-            if settings.admin_openid and openid != settings.admin_openid:
+            if not is_admin_of(author_ids, member_role, scene):
                 return "FOX-2正在执行任务，不能陪你聊天喵~", False  # 白名单外的人不接
 
             reply = await agent.ask(session, r.payload, session_key)
@@ -119,6 +147,8 @@ async def main() -> bool:
             msg_id: str,
             session_key: str,        # agent/ECUST 记忆隔离键
             msg_ref_id: str = "",    # 群里被 @ 时，要引用的那条消息 REFIDX（可选）
+            author_ids: tuple[str, ...] = (),  # 候选用户标识（判管理员用）
+            member_role: str = "",               # 群里身份：owner/admin/member
         ) -> None:
             async def sender(message: str, seq: int) -> None:
                 token = await tokens.get(session)
@@ -134,7 +164,8 @@ async def main() -> bool:
 
             async def reply_coro() -> str:
                 reply, restart = await compute_reply(
-                    text, openid, session_key, scene, group_openid
+                    text, openid, session_key, scene, group_openid, author_ids,
+                    member_role,
                 )
                 flag["restart"] = restart
                 return reply
@@ -179,29 +210,27 @@ async def main() -> bool:
             if not info:
                 return False
             token = await tokens.get(session)
+            text_out = bili.format_video(info, with_link=settings.bili_link)
             if scene == "group":
-                card = bili.build_card(info)
-                if card:
-                    status = await send_group_card(
-                        session, token, group_openid, card, msg_id,
-                        msg_seq=1, msg_ref_id=msg_ref_id,
-                    )
-                else:
-                    status = await send_group_msg(
-                        session, token, group_openid, bili.format_video(info), msg_id,
-                        msg_seq=1, msg_ref_id=msg_ref_id,
-                    )
-                if status >= 400:
-                    # 卡片发不出去（比如没权限/字段不合法）→ 退一步发纯文本
-                    log.warning("群卡片发送失败，退回纯文本（HTTP %s）", status)
-                    await send_group_msg(
-                        session, token, group_openid, bili.format_video(info), msg_id,
-                        msg_seq=1, msg_ref_id=msg_ref_id,
-                    )
-            else:
-                await send_c2c(
-                    session, token, openid, bili.format_video(info), msg_id, msg_seq=1
+                # 默认发**纯文本**：BV 号单独一行，双击就能复制到 APP 里搜。
+                # 图文卡片点进去是 B 站小程序，不方便复制 —— 要卡片得显式开 BILI_CARD=1。
+                if settings.bili_card:
+                    card = bili.build_card(info)
+                    if card:
+                        status = await send_group_card(
+                            session, token, group_openid, card, msg_id,
+                            msg_seq=1, msg_ref_id=msg_ref_id,
+                        )
+                        if status < 400:
+                            log.info("识别到 B 站视频：%s（卡片）", info.get("bvid"))
+                            return True
+                        log.warning("群卡片发送失败，退回纯文本（HTTP %s）", status)
+                await send_group_msg(
+                    session, token, group_openid, text_out, msg_id,
+                    msg_seq=1, msg_ref_id=msg_ref_id,
                 )
+            else:
+                await send_c2c(session, token, openid, text_out, msg_id, msg_seq=1)
             log.info("识别到 B 站视频：%s", info.get("bvid"))
             return True
 
@@ -264,6 +293,21 @@ async def main() -> bool:
             else:
                 return
 
+            # 候选用户标识：官方协议里同一个人在私聊/群里是不同的 openid
+            # （私聊 user_openid / 群里 member_openid），只有 author.id 跨场景稳定。
+            # 白名单里填哪个都能匹配上。
+            author_ids = tuple(
+                dict.fromkeys(
+                    x for x in (
+                        author.get("id"),
+                        author.get("user_openid"),
+                        author.get("member_openid"),
+                    ) if x
+                )
+            )
+            # 群里身份：owner（群主）/ admin（管理员）/ member（普通成员）
+            member_role = str(author.get("member_role") or "")
+
             if not openid or not msg_id or (scene == "group" and not group_openid):
                 log.debug("消息字段不完整，忽略")
                 return
@@ -284,6 +328,28 @@ async def main() -> bool:
             if event_type == "GROUP_MESSAGE_CREATE":
                 if author.get("bot"):
                     return   # 机器人自己发的，别自嗨
+                stripped = (text or "").strip()
+                # 群里不 @ 但发的是斜杠命令：
+                #   - 管理员 → 一律响应（/bili /restart 这些都得能用）
+                #   - 其他人 → 只响应 GROUP_COMMANDS 里列的公开命令
+                #   别的 → 静默忽略（别在群里刷屏说「只有管理员能用」）
+                if stripped.startswith("/"):
+                    parts = stripped[1:].split()
+                    cmd_name = parts[0].lower() if parts else ""
+                    allowed = cmd_name in settings.group_commands
+                    if not allowed and is_admin_of(author_ids, member_role, "group"):
+                        allowed = True
+                    if allowed:
+                        dispatcher.spawn(
+                            group_openid,
+                            handle_group_command(
+                                openid, group_openid, stripped, msg_id,
+                                session_key, author_ids, member_role,
+                            ),
+                        )
+                        return
+                    repeater.observe(group_openid, text, openid)
+                    return
                 if bili_candidate:
                     dispatcher.spawn(
                         group_openid,
@@ -298,7 +364,8 @@ async def main() -> bool:
             if bili_candidate:
                 async def _bili_miss() -> None:
                     await _handle_text(
-                        scene, openid, group_openid, text, msg_id, session_key, msg_ref_id
+                        scene, openid, group_openid, text, msg_id, session_key, msg_ref_id,
+                        author_ids, member_role,
                     )
 
                 dispatcher.spawn(
@@ -312,9 +379,40 @@ async def main() -> bool:
             dispatcher.spawn(
                 group_openid if scene == "group" else openid,
                 _handle_text(
-                    scene, openid, group_openid, text, msg_id, session_key, msg_ref_id
+                    scene, openid, group_openid, text, msg_id, session_key, msg_ref_id,
+                    author_ids, member_role,
                 ),
             )
+
+        async def handle_group_command(
+            openid: str,
+            group_openid: str,
+            text: str,
+            msg_id: str,
+            session_key: str,
+            author_ids: tuple[str, ...],
+            member_role: str = "",
+        ) -> None:
+            """群里没 @ 机器人、但发的是允许的命令 → 直接回。
+
+            先试被动回复（带 msg_id，额度更宽）；被拒（过期/越权）就退成主动消息重发。
+            """
+            reply, restart = await compute_reply(
+                text, openid, session_key, "group", group_openid, author_ids,
+                member_role,
+            )
+            if restart:
+                restart_event.set()
+            if not reply:
+                return
+            token = await tokens.get(session)
+            status = await send_group_msg(
+                session, token, group_openid, reply, msg_id, msg_seq=1
+            )
+            if status >= 400:
+                log.warning("群命令被动回复失败（HTTP %s），改发主动消息", status)
+                await send_group_msg(session, token, group_openid, reply)
+            log.info("群命令已回复：%s", text[:40])
 
         async def _handle_text(
             scene: str,
@@ -324,6 +422,8 @@ async def main() -> bool:
             msg_id: str,
             session_key: str,
             msg_ref_id: str = "",
+            author_ids: tuple[str, ...] = (),
+            member_role: str = "",
         ) -> None:
             """普通消息（@ 机器人的私聊/群聊）→ 走命令或 agent。
 
@@ -339,7 +439,8 @@ async def main() -> bool:
             label = "群聊" if scene == "group" else "私聊"
             log.info("收到%s %s：%s", label, scene == "group" and f"group={group_openid[:100]}" or f"openid={openid[:10]}", text[:60])
             await handle_message(
-                scene, openid, group_openid, text, msg_id, session_key, msg_ref_id
+                scene, openid, group_openid, text, msg_id, session_key, msg_ref_id,
+                author_ids, member_role,
             )
 
         client = QQBotClient(session, tokens, on_event)

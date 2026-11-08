@@ -35,7 +35,7 @@ class Settings:
     ecust_model: str
     ecust_system_prompt: str
     # 其他
-    admin_openid: str
+    admin_openids: tuple[str, ...]
     data_dir: Path
     # 群复读
     repeat_min_count: int
@@ -45,6 +45,15 @@ class Settings:
     bili_mode: str
     bili_off_groups: tuple[str, ...]
     bili_only_groups: tuple[str, ...]
+    bili_card: bool
+    bili_link: bool
+    # 群里不 @ 机器人也能用的命令
+    group_commands: tuple[str, ...]
+
+    @property
+    def admin_openid(self) -> str:
+        """兼容旧字段：第一个管理员 openid（没设就是空串）。"""
+        return self.admin_openids[0] if self.admin_openids else ""
 
     @property
     def token_cache(self) -> Path:
@@ -71,7 +80,9 @@ def load_settings() -> Settings:
         ecust_model=os.getenv("ECUST_MODEL", "").strip(),
         ecust_system_prompt=os.getenv("ECUST_SYSTEM_PROMPT", "").strip(),
 
-        admin_openid=os.getenv("ADMIN_OPENID", "").strip(),
+        admin_openids=tuple(
+            a.strip() for a in os.getenv("ADMIN_OPENID", "").split(",") if a.strip()
+        ),
         data_dir=data_dir,
 
         repeat_min_count=max(2, int(os.getenv("REPEAT_MIN_COUNT", "3"))),
@@ -85,5 +96,17 @@ def load_settings() -> Settings:
         ),
         bili_only_groups=tuple(
             g.strip() for g in os.getenv("BILI_ONLY_GROUPS", "").split(",") if g.strip()
+        ),
+        # 默认发纯文本（BV号单独一行，方便复制）；置 1 才发图文卡片
+        bili_card=os.getenv("BILI_CARD", "0").strip().lower()
+        in ("1", "true", "on", "yes"),
+        # 是否在 B 站回复里附带完整链接（默认不带：QQ 会把链接渲染成小程序预览）
+        bili_link=os.getenv("BILI_LINK", "0").strip().lower()
+        in ("1", "true", "on", "yes"),
+        # 群里不 @ 机器人也能用的命令（公开命令）
+        group_commands=tuple(
+            c.strip().lower()
+            for c in os.getenv("GROUP_COMMANDS", "help,time,choose,echo,whoami").split(",")
+            if c.strip()
         ),
     )
