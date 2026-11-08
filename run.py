@@ -140,7 +140,9 @@ async def main() -> bool:
                 return await handle_command(r.payload, cmd), cmd.restart_requested
 
             if not is_admin_of(author_ids, member_role, scene):
-                return "FOX-2正在执行任务，不能陪你聊天喵~", False  # 白名单外的人不接
+                # 白名单外的人不接。（原来写的是「FOX-2」，那是 Nico_21599 的代号，
+                # 本项目的角色是普拉娜。）
+                return "普拉娜正在执行任务，暂时不能聊天。", False
 
             reply = await agent.ask(session, r.payload, session_key)
             return reply, False

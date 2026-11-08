@@ -99,7 +99,9 @@ async def handle(text: str, ctx: CommandContext) -> str:
         return f"只有管理员能用 /{name}。你可以用 /raw 找普拉娜聊天 🦊"
 
     if name == "test502":
-        return "Here is FOX-2!"
+        # 「Here is FOX-2!」是从 Nico_21599 抄过来的，那个项目里的角色代号是 FOX-2。
+        # 本项目的角色是普拉娜（Plana），代号不能乱用。
+        return "普拉娜，待命中。"
     if name == "choose":
         # 从选项里随机选一个（/choose 甲 乙 丙 ...），对齐 Nico_21599 行为
         nums = len(args)
