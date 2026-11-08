@@ -264,6 +264,26 @@ async def test_admin_ids() -> None:
     out4 = await handle("/whoami", ctx4)
     check("非管理员可用 /whoami", "U2" in out4, f"实际 {out4}")
 
+    # quiet_unknown：群里不 @ 时未知命令静默（返回空串，不刷屏）
+    ctx5 = CommandContext(openid="X", is_admin=True, quiet_unknown=True)
+    out5 = await handle("/nonexistent_cmd", ctx5)
+    check("quiet_unknown → 未知命令返回空", out5 == "", f"实际 {out5!r}")
+
+    # 但 quiet_unknown 下已知命令照样回
+    ctx6 = CommandContext(openid="X", is_admin=True, quiet_unknown=True)
+    out6 = await handle("/time", ctx6)
+    check("quiet_unknown → 已知命令正常回", "本地时间" in out6, f"实际 {out6!r}")
+
+    # 非 quiet 时未知命令给提示（老行为不变）
+    ctx7 = CommandContext(openid="X", is_admin=True)
+    out7 = await handle("/nonexistent_cmd", ctx7)
+    check("非 quiet → 未知命令给提示", "未知命令" in out7, f"实际 {out7!r}")
+
+    # 非管理员用管理类命令 + quiet_unknown → 也静默
+    ctx8 = CommandContext(openid="X", is_admin=False, quiet_unknown=True)
+    out8 = await handle("/restart", ctx8)
+    check("quiet_unknown → 无权限命令静默", out8 == "", f"实际 {out8!r}")
+
 
 def test_switch() -> None:
     print("\n== B站开关 ==")

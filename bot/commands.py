@@ -73,6 +73,7 @@ class CommandContext:
     user_openid: str = ""                       # 私聊场景的用户 openid（群里没这个值）
     admin_openids: tuple[str, ...] = ()         # 管理员白名单（可以有多个）
     author_ids: tuple[str, ...] = ()            # 本条消息里能拿到的所有用户标识
+    quiet_unknown: bool = False                 # 未知命令静默（群里不 @ 时用）
 
 
 def current_model(ctx: CommandContext) -> str:
@@ -81,7 +82,11 @@ def current_model(ctx: CommandContext) -> str:
 
 
 async def handle(text: str, ctx: CommandContext) -> str:
-    """处理一条斜杠命令，返回要回复的文本。未知命令给提示。"""
+    """处理一条斜杠命令，返回要回复的文本。未知命令给提示。
+
+    ctx.quiet_unknown=True 时未知命令返回空串（调用方不发消息）——
+    群里不 @ 的场景用这个，免得刷屏。
+    """
     parts = text[1:].split()
     if not parts:
         return "输入 /help 查看可用指令"
@@ -89,6 +94,8 @@ async def handle(text: str, ctx: CommandContext) -> str:
 
     # A：管理类命令只给管理员（public_commands() 里的公开命令例外）
     if not ctx.is_admin and name not in public_commands():
+        if ctx.quiet_unknown:
+            return ""
         return f"只有管理员能用 /{name}。你可以用 /raw 找普拉娜聊天 🦊"
 
     if name == "test502":
@@ -127,6 +134,8 @@ async def handle(text: str, ctx: CommandContext) -> str:
         return "收到，正在重启…（几秒后回来）"
     if name in ("models", "model", "raw", "forget", "ping"):
         return await _handle_ecust(name, args, ctx)
+    if ctx.quiet_unknown:
+        return ""   # 群里不 @ 时不刷屏
     return f"未知命令 /{name}，输入 /help 查看可用指令"
 
 

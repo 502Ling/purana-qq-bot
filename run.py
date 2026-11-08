@@ -111,11 +111,13 @@ async def main() -> bool:
             group_openid: str,
             author_ids: tuple[str, ...],
             member_role: str = "",
+            quiet_unknown: bool = False,
         ) -> tuple[str, bool]:
             """算出回复文本，以及是否请求重启。
 
             openid 用于权限/记忆标识；session_key 是 agent 或 ECUST 记忆隔离用的键
             （私聊=openid，群里=group_openid+member 组合，避免串上下文）。
+            quiet_unknown=True 时，未知/无权限的命令返回空串（不刷屏）。
             """
             r = route(text)
             if r.kind == "command":
@@ -133,6 +135,7 @@ async def main() -> bool:
                     is_group=scene == "group",
                     author_ids=author_ids,
                     admin_openids=settings.admin_openids,
+                    quiet_unknown=quiet_unknown,
                 )
                 return await handle_command(r.payload, cmd), cmd.restart_requested
 
@@ -354,10 +357,11 @@ async def main() -> bool:
                     return   # 机器人自己发的，别自嗨
                 stripped = (clean_text or "").strip()
                 # 群里不 @ 但发的是斜杠命令：
+                #   - 总闸 GROUP_COMMAND_ENABLE 关了 → 一律当普通群消息（静默）
                 #   - 管理员 → 一律响应（/bili /restart 这些都得能用）
                 #   - 其他人 → 只响应 GROUP_COMMANDS 里列的公开命令
                 #   别的 → 静默忽略（别在群里刷屏说「只有管理员能用」）
-                if stripped.startswith("/"):
+                if stripped.startswith("/") and settings.group_command_enable:
                     parts = stripped[1:].split()
                     cmd_name = parts[0].lower() if parts else ""
                     allowed = cmd_name in settings.group_commands
@@ -420,10 +424,11 @@ async def main() -> bool:
             """群里没 @ 机器人、但发的是允许的命令 → 直接回。
 
             先试被动回复（带 msg_id，额度更宽）；被拒（过期/越权）就退成主动消息重发。
+            quiet_unknown=True：未知/无权限的命令不刷屏（返回空串就不发）。
             """
             reply, restart = await compute_reply(
                 text, openid, session_key, "group", group_openid, author_ids,
-                member_role,
+                member_role, quiet_unknown=True,
             )
             if restart:
                 restart_event.set()

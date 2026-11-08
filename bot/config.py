@@ -49,6 +49,8 @@ class Settings:
     bili_link: bool
     # 群里不 @ 机器人也能用的命令
     group_commands: tuple[str, ...]
+    # 总闸：群里不 @ 机器人能不能发斜杠命令
+    group_command_enable: bool
 
     @property
     def admin_openid(self) -> str:
@@ -103,7 +105,9 @@ def load_settings() -> Settings:
         # 是否在 B 站回复里附带完整链接（默认不带：QQ 会把链接渲染成小程序预览）
         bili_link=os.getenv("BILI_LINK", "0").strip().lower()
         in ("1", "true", "on", "yes"),
-        # 群里不 @ 机器人也能用的命令（公开命令）
+        # 群里不 @ 机器人也能用的命令（总闸关了整条都无效）
+        group_command_enable=os.getenv("GROUP_COMMAND_ENABLE", "1").strip().lower()
+        not in ("0", "false", "off", "no"),
         group_commands=tuple(
             c.strip().lower()
             for c in os.getenv("GROUP_COMMANDS", "help,time,choose,echo,whoami").split(",")
