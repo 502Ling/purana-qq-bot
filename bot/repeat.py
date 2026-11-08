@@ -40,11 +40,20 @@ class Repeater:
         self._streak: dict[str, tuple[str, int, str, bool]] = {}
         self._pending: dict[str, asyncio.Task] = {}    # gid -> 待复读任务
         self._fired: dict[str, str] = {}               # gid -> 已复读的文本（同一串只复读一次）
+        # 已观察过的 msg_id：QQ 会为**同一条** @ 消息推两个事件
+        # （GROUP_AT_MESSAGE_CREATE + GROUP_MESSAGE_CREATE），两个都调 observe 会重复计数。
+        self._observed: set[str] = set()
 
     # ---------- 对外 ----------
 
-    def observe(self, gid: str, text: str, sender: str) -> None:
+    def observe(self, gid: str, text: str, sender: str, msg_id: str = "") -> None:
         """收到一条群内普通消息（非 @ 由调用方保证；命令/空这里再兜一层）。"""
+        if msg_id:
+            if msg_id in self._observed:
+                return   # 同一条消息的重复事件（@ 消息会被推两次）
+            self._observed.add(msg_id)
+            if len(self._observed) > 2000:
+                self._observed.clear()
         text = (text or "").strip()
         if not text or text.startswith("/"):
             self._reset(gid)   # 命令/空 → 当作话题打断
@@ -84,6 +93,7 @@ class Repeater:
         self._pending.clear()
         self._streak.clear()
         self._fired.clear()
+        self._observed.clear()
 
     # ---------- 内部 ----------
 

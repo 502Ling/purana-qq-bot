@@ -16,6 +16,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 from bot import bili
+from bot.qq.mentions import detect_at_bot, split_mentions
 from bot.repeat import Repeater
 
 FAILED = 0
@@ -28,6 +29,61 @@ def check(name: str, cond: bool, extra: str = "") -> None:
     else:
         FAILED += 1
         print(f"  [FAIL] {name} {extra}")
+
+
+def test_mentions() -> None:
+    print("\n== @ 占位符识别 ==")
+    APP = "1905646947"
+
+    # 1) GROUP_AT_MESSAGE_CREATE：content 是干净的（官方自动去掉了 @ 前缀）
+    clean, at = detect_at_bot(
+        {"content": "/time"}, APP, "GROUP_AT_MESSAGE_CREATE"
+    )
+    check("AT事件 → 判为@机器人", at, f"实际 at={at}")
+    check("AT事件 → 正文干净", clean == "/time", f"实际 {clean!r}")
+
+    # 2) 全量事件里带 <@!appid> 占位符 → 也要判为 @ 机器人
+    clean, at = detect_at_bot(
+        {"content": " <@!1905646947> /bili"}, APP, "GROUP_MESSAGE_CREATE"
+    )
+    check("全量事件带占位符 → @机器人", at, f"实际 at={at}")
+    check("全量事件 → 占位符被剥掉", clean == "/bili", f"实际 {clean!r}")
+
+    # 3) 全量事件里 @ 别人 → 不算 @ 机器人，但占位符也要剥
+    clean, at = detect_at_bot(
+        {"content": " <@7A3B9C1D5E2F4A6B8C0D1E3F5A7B9C2D> 你好"}, APP, "GROUP_MESSAGE_CREATE"
+    )
+    check("@别人 → 不算@机器人", not at, f"实际 at={at}")
+    check("@别人 → 占位符被剥掉", clean == "你好", f"实际 {clean!r}")
+
+    # 4) <@all> → 算 @ 机器人（该响应）
+    clean, at = detect_at_bot(
+        {"content": " <@all> 大家看看"}, APP, "GROUP_MESSAGE_CREATE"
+    )
+    check("@全体成员 → 算@机器人", at, f"实际 at={at}")
+    check("@全体成员 → 占位符被剥掉", clean == "大家看看", f"实际 {clean!r}")
+
+    # 5) mentions 里含自己的 AppID → 双保险判为 @
+    clean, at = detect_at_bot(
+        {"content": " 在吗", "mentions": [{"id": APP}]}, APP, "GROUP_MESSAGE_CREATE"
+    )
+    check("mentions 命中 → @机器人", at, f"实际 at={at}")
+
+    # 6) 普通群消息 → 不算 @ 机器人
+    clean, at = detect_at_bot(
+        {"content": "今天天气不错"}, APP, "GROUP_MESSAGE_CREATE"
+    )
+    check("普通消息 → 不算@机器人", not at, f"实际 at={at}")
+    check("普通消息 → 正文不变", clean == "今天天气不错", f"实际 {clean!r}")
+
+    # 7) 单独一个 @（后面没字）→ 剥完是空的
+    clean, at = split_mentions(" <@!1905646947> ", APP)
+    check("单独@ → 正文为空", clean == "", f"实际 {clean!r}")
+
+    # 8) 多个 @ 混在一起
+    clean, at = split_mentions(" <@!1905646947> <@ABC123> 帮我看看", APP)
+    check("多个@ → 都剥掉", clean == "帮我看看", f"实际 {clean!r}")
+    check("多个@ → 机器人仍被识别", at, f"实际 at={at}")
 
 
 async def test_repeat() -> None:
@@ -241,6 +297,7 @@ async def main() -> int:
     test_bili_extract()
     test_switch()
     await test_admin_ids()
+    test_mentions()
     print()
     if FAILED:
         print(f"❌ {FAILED} 项失败")

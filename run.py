@@ -29,6 +29,7 @@ from bot.log import setup_logging
 from bot.qq.api import send_c2c, send_group_card, send_group_msg
 from bot.qq.auth import TokenManager
 from bot.qq.client import QQBotClient
+from bot.qq.mentions import detect_at_bot
 from bot.ratelimit import RateLimiter
 from bot.repeat import Repeater
 from bot.reply import deliver
@@ -70,7 +71,9 @@ async def main() -> bool:
         settings.bili_only_groups,
     )
 
-    seen: set[str] = set()  # 去重：同一个 msg_id 只处理一次
+    # 去重：同一个 msg_id 只处理一次。值 = 这条消息是不是 @ 了机器人
+    # （用来决定后到的 @ 事件能不能「升级」放行）
+    seen: dict[str, bool] = {}
     ecust_models: dict[str, str] = {}  # openid -> 该用户选中的 ECUST 模型
     restart_event = asyncio.Event()
     dispatcher = Dispatcher(MAX_CONCURRENT)
@@ -177,8 +180,7 @@ async def main() -> bool:
                 log.info("收到 /restart，正在退出以便重启…")
                 restart_event.set()
 
-        # 群里被 @ 的消息，content 里会带 <@!bot_appid> 之类的占位符，剥掉
-        AT_MENTION_RE = re.compile(r"<@![^>]*>")
+        # 群里 @ 的占位符处理见 bot/qq/mentions.py（那边有详细的坑位说明）
 
         async def send_repeat(gid: str, text: str) -> None:
             """复读发送：纯文本、不带 msg_id、不带引用 → 主动消息。
@@ -311,12 +313,34 @@ async def main() -> bool:
             if not openid or not msg_id or (scene == "group" and not group_openid):
                 log.debug("消息字段不完整，忽略")
                 return
+
+            # **是否 @ 了机器人 + 干净正文**：不能只看事件类型。
+            # QQ 会给一条 @ 消息推**两个事件**（GROUP_AT_MESSAGE_CREATE +
+            # GROUP_MESSAGE_CREATE），后者 content 里带 <@!appid> 占位符。
+            # 两个事件都按内容判一次，拿到统一的正文。详见 bot/qq/mentions.py。
+            clean_text, at_bot = (text, False)
+            if scene == "group":
+                clean_text, at_bot = detect_at_bot(data, settings.app_id, event_type)
+
+            # 去重：**同一个 msg_id 只处理一次**，但要允许「升级」。
+            # 如果先到的是普通群消息、后到的是 @ 消息，必须放行后者 ——
+            # 否则 @ 机器人永远没反应（先到的事件把去重表占了）。
             if msg_id in seen:
-                log.debug("重复消息，忽略：%s", msg_id)
-                return
-            seen.add(msg_id)
-            if len(seen) > 1000:
-                seen.clear()
+                if at_bot and not seen[msg_id]:
+                    seen[msg_id] = True
+                    log.info("同一条消息的 @ 事件补到，放行：%s", msg_id[:24])
+                else:
+                    log.debug("重复消息，忽略：%s（at=%s）", msg_id[:24], at_bot)
+                    return
+            else:
+                seen[msg_id] = at_bot
+                if len(seen) > 1000:
+                    seen.clear()
+
+            log.info(
+                "收到事件 %s at=%s 群/私=%s：%s",
+                event_type, at_bot, label, (clean_text or text)[:50],
+            )
 
             # B站分享：先做**同步**的链接判断（不发网络请求），
             # 真有链接才丢后台去查 B 站接口 —— 避免卡住收消息的循环。
@@ -324,11 +348,11 @@ async def main() -> bool:
             # 所以不能拿「content 为空」当过滤条件。
             bili_candidate = bili.has_link(data)
 
-            # 群里没 @ 机器人的普通消息：只喂复读机 + B站识别，不烧 token
-            if event_type == "GROUP_MESSAGE_CREATE":
+            # 群里**没** @ 机器人的普通消息：只喂复读机 + B站识别，不烧 token
+            if scene == "group" and not at_bot:
                 if author.get("bot"):
                     return   # 机器人自己发的，别自嗨
-                stripped = (text or "").strip()
+                stripped = (clean_text or "").strip()
                 # 群里不 @ 但发的是斜杠命令：
                 #   - 管理员 → 一律响应（/bili /restart 这些都得能用）
                 #   - 其他人 → 只响应 GROUP_COMMANDS 里列的公开命令
@@ -348,7 +372,7 @@ async def main() -> bool:
                             ),
                         )
                         return
-                    repeater.observe(group_openid, text, openid)
+                    repeater.observe(group_openid, text, openid, msg_id)
                     return
                 if bili_candidate:
                     dispatcher.spawn(
@@ -356,7 +380,7 @@ async def main() -> bool:
                         handle_bili(data, "group", openid, group_openid, msg_id),
                     )
                     return
-                repeater.observe(group_openid, text, openid)
+                repeater.observe(group_openid, text, openid, msg_id)
                 return
 
             # 被 @ 的消息：先看是不是 B 站分享，是就直接给卡片。
@@ -430,9 +454,11 @@ async def main() -> bool:
             这个函数是**同步等完**的，所以调用方必须保证自己已经不在收消息的循环里
             （要么丢给 dispatcher，要么本身就在后台任务里）。
             """
-            # 群里被 @ 时剥离占位符，别把 <@!xxx> 当正文喂给模型
+            # 群里被 @ 时剥离占位符，别把 <@!xxx> 当正文喂给模型。
+            # （正文在 on_event 里已经用 detect_at_bot 剥过了，这里再剥一次兼底：
+            #  单独处理 @ 而后面没别的字时，剥完是空的 → 直接不回复）
             if scene == "group":
-                text = AT_MENTION_RE.sub("", text).strip()
+                text, _at = detect_at_bot({"content": text}, settings.app_id)
                 if not text:
                     return
 
