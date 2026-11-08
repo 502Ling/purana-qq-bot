@@ -56,6 +56,7 @@ bot/
     gateway.py      取 WS 地址
     client.py       长连接：心跳 / 事件 / 重连
     api.py          发私聊 / 群消息 / 图文卡片
+    mentions.py     群消息 @ 占位符识别与剥离
 ```
 
 ## 跑起来
