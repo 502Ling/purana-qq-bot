@@ -13,10 +13,12 @@ import logging
 import os
 import re
 import sys
+from typing import Any
 
 import aiohttp
 
 from bot.agent import AgentClient
+from bot import bili
 from bot.commands import CommandContext, handle as handle_command
 from bot.config import load_settings
 from bot.dispatch import Dispatcher
@@ -24,10 +26,11 @@ from bot.ecust import EcustClient
 from bot.history import History
 from bot.keys import wait_for_escape
 from bot.log import setup_logging
-from bot.qq.api import send_c2c, send_group_msg
+from bot.qq.api import send_c2c, send_group_card, send_group_msg
 from bot.qq.auth import TokenManager
 from bot.qq.client import QQBotClient
 from bot.ratelimit import RateLimiter
+from bot.repeat import Repeater
 from bot.reply import deliver
 from bot.router import route
 
@@ -59,6 +62,13 @@ async def main() -> bool:
         settings.ecust_base_url, settings.ecust_api_key, settings.ecust_model
     )
     history = History(settings.data_dir / "ecust_history.json")
+    bili_switch = bili.BiliSwitch(
+        settings.data_dir / "bili_off.json",
+        settings.bili_enabled,
+        settings.bili_mode,
+        settings.bili_off_groups,
+        settings.bili_only_groups,
+    )
 
     seen: set[str] = set()  # 去重：同一个 msg_id 只处理一次
     ecust_models: dict[str, str] = {}  # openid -> 该用户选中的 ECUST 模型
@@ -69,7 +79,7 @@ async def main() -> bool:
     async with aiohttp.ClientSession() as session:
 
         async def compute_reply(
-            text: str, openid: str, session_key: str
+            text: str, openid: str, session_key: str, scene: str, group_openid: str
         ) -> tuple[str, bool]:
             """算出回复文本，以及是否请求重启。
 
@@ -89,6 +99,9 @@ async def main() -> bool:
                     is_admin=not settings.admin_openid
                     or openid == settings.admin_openid,
                     rate_limit=rate_limit,
+                    bili_switch=bili_switch,
+                    group_openid=group_openid,
+                    is_group=scene == "group",
                 )
                 return await handle_command(r.payload, cmd), cmd.restart_requested
 
@@ -120,7 +133,9 @@ async def main() -> bool:
             flag: dict[str, bool] = {}
 
             async def reply_coro() -> str:
-                reply, restart = await compute_reply(text, openid, session_key)
+                reply, restart = await compute_reply(
+                    text, openid, session_key, scene, group_openid
+                )
                 flag["restart"] = restart
                 return reply
 
@@ -133,6 +148,62 @@ async def main() -> bool:
 
         # 群里被 @ 的消息，content 里会带 <@!bot_appid> 之类的占位符，剥掉
         AT_MENTION_RE = re.compile(r"<@![^>]*>")
+
+        async def send_repeat(gid: str, text: str) -> None:
+            """复读发送：纯文本、不带 msg_id、不带引用 → 主动消息。
+
+            官方群被动回复窗口只有 5 分钟，复读本身是延后触发的，
+            早就过期了，所以只能走主动消息（受频控限制，见 README）。
+            """
+            token = await tokens.get(session)
+            await send_group_msg(session, token, gid, text)
+
+        repeater = Repeater(settings.repeat_delay, send_repeat, settings.repeat_min_count)
+
+        async def try_bili(
+            data: dict,
+            scene: str,
+            openid: str,
+            group_openid: str,
+            msg_id: str,
+            msg_ref_id: str = "",
+        ) -> bool:
+            """消息里是 B 站内容就发卡片/文本，返回 True 表示已处理。
+
+            ⚠️ 这函数会发网络请求（B站接口最多 8s），**不能在收事件的循环里直接调**，
+            会把 WebSocket 读循环卡住 → 丢消息。所以调用方必须把它丢到 dispatcher 里。
+            """
+            if not bili_switch.allowed(scene, group_openid):
+                return False
+            info = await bili.parse_event(data, session)
+            if not info:
+                return False
+            token = await tokens.get(session)
+            if scene == "group":
+                card = bili.build_card(info)
+                if card:
+                    status = await send_group_card(
+                        session, token, group_openid, card, msg_id,
+                        msg_seq=1, msg_ref_id=msg_ref_id,
+                    )
+                else:
+                    status = await send_group_msg(
+                        session, token, group_openid, bili.format_video(info), msg_id,
+                        msg_seq=1, msg_ref_id=msg_ref_id,
+                    )
+                if status >= 400:
+                    # 卡片发不出去（比如没权限/字段不合法）→ 退一步发纯文本
+                    log.warning("群卡片发送失败，退回纯文本（HTTP %s）", status)
+                    await send_group_msg(
+                        session, token, group_openid, bili.format_video(info), msg_id,
+                        msg_seq=1, msg_ref_id=msg_ref_id,
+                    )
+            else:
+                await send_c2c(
+                    session, token, openid, bili.format_video(info), msg_id, msg_seq=1
+                )
+            log.info("识别到 B 站视频：%s", info.get("bvid"))
+            return True
 
         def extract_msg_ref_id(data: dict) -> str:
             """从群事件里抠出要引用的消息 REFIDX（MSGExt 的 msg_idx=REFIDX_...）。
@@ -147,6 +218,26 @@ async def main() -> bool:
                 if s.startswith("msg_idx="):
                     return s[len("msg_idx="):].strip()
             return ""
+
+        async def handle_bili(
+            data: dict,
+            scene: str,
+            openid: str,
+            group_openid: str,
+            msg_id: str,
+            msg_ref_id: str = "",
+            on_miss: Any = None,
+        ) -> None:
+            """B站识别的完整流程。
+
+            整体跑在 dispatcher 的后台任务里 —— try_bili 要发网络请求（B站最多 8s），
+            绝不能占着收消息的循环，否则会丢消息。
+            on_miss：识别失败时的兜底（比如 @ 机器人时转去跟 agent 聊）。
+            """
+            if await try_bili(data, scene, openid, group_openid, msg_id, msg_ref_id):
+                return
+            if on_miss is not None:
+                await on_miss()
 
         async def on_event(event: dict) -> None:
             event_type = event["type"]
@@ -173,9 +264,7 @@ async def main() -> bool:
             else:
                 return
 
-            if not openid or not text or not msg_id or (
-                scene == "group" and not group_openid
-            ):
+            if not openid or not msg_id or (scene == "group" and not group_openid):
                 log.debug("消息字段不完整，忽略")
                 return
             if msg_id in seen:
@@ -185,23 +274,72 @@ async def main() -> bool:
             if len(seen) > 1000:
                 seen.clear()
 
-            # 群里没 @ 机器人的普通消息：目前静默不回复（占个位，后续可接复读机等）
+            # B站分享：先做**同步**的链接判断（不发网络请求），
+            # 真有链接才丢后台去查 B 站接口 —— 避免卡住收消息的循环。
+            # 分享卡片的 content 可能是空的（链接在 ark_data/msg_elements 里），
+            # 所以不能拿「content 为空」当过滤条件。
+            bili_candidate = bili.has_link(data)
+
+            # 群里没 @ 机器人的普通消息：只喂复读机 + B站识别，不烧 token
             if event_type == "GROUP_MESSAGE_CREATE":
+                if author.get("bot"):
+                    return   # 机器人自己发的，别自嗨
+                if bili_candidate:
+                    dispatcher.spawn(
+                        group_openid,
+                        handle_bili(data, "group", openid, group_openid, msg_id),
+                    )
+                    return
+                repeater.observe(group_openid, text, openid)
                 return
 
+            # 被 @ 的消息：先看是不是 B 站分享，是就直接给卡片。
+            # 同样不能阻塞收消息循环 → 丢后台；识别失败再转给 agent。
+            if bili_candidate:
+                async def _bili_miss() -> None:
+                    await _handle_text(
+                        scene, openid, group_openid, text, msg_id, session_key, msg_ref_id
+                    )
+
+                dispatcher.spawn(
+                    group_openid if scene == "group" else openid,
+                    handle_bili(
+                        data, scene, openid, group_openid, msg_id, msg_ref_id, _bili_miss
+                    ),
+                )
+                return
+
+            dispatcher.spawn(
+                group_openid if scene == "group" else openid,
+                _handle_text(
+                    scene, openid, group_openid, text, msg_id, session_key, msg_ref_id
+                ),
+            )
+
+        async def _handle_text(
+            scene: str,
+            openid: str,
+            group_openid: str,
+            text: str,
+            msg_id: str,
+            session_key: str,
+            msg_ref_id: str = "",
+        ) -> None:
+            """普通消息（@ 机器人的私聊/群聊）→ 走命令或 agent。
+
+            这个函数是**同步等完**的，所以调用方必须保证自己已经不在收消息的循环里
+            （要么丢给 dispatcher，要么本身就在后台任务里）。
+            """
             # 群里被 @ 时剥离占位符，别把 <@!xxx> 当正文喂给模型
             if scene == "group":
                 text = AT_MENTION_RE.sub("", text).strip()
                 if not text:
                     return
 
+            label = "群聊" if scene == "group" else "私聊"
             log.info("收到%s %s：%s", label, scene == "group" and f"group={group_openid[:100]}" or f"openid={openid[:10]}", text[:60])
-            # 关键：丢给后台就立刻返回，收消息的循环不再被堵住
-            # 群里按 group 保序（同一个群的消息顺序发送），私聊按 openid
-            lock_key = group_openid if scene == "group" else openid
-            dispatcher.spawn(
-                lock_key,
-                handle_message(scene, openid, group_openid, text, msg_id, session_key, msg_ref_id),
+            await handle_message(
+                scene, openid, group_openid, text, msg_id, session_key, msg_ref_id
             )
 
         client = QQBotClient(session, tokens, on_event)
@@ -237,6 +375,7 @@ async def main() -> bool:
             if dispatcher.pending:
                 log.info("还有 %s 条消息在处理中，取消掉…", dispatcher.pending)
             await dispatcher.shutdown()
+            await repeater.close()
             await client.close()
 
     return restarting

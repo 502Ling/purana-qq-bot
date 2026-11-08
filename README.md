@@ -36,6 +36,7 @@ run.py              入口
 dev.py              开发用：改代码自动重启
 dev.bat             双击就能跑 dev.py
 check_models.py     诊断：测 ECUST 各模型连通性
+selftest.py         离线自测（复读机 + B站解析 + 开关，不联网）
 bot/
   config.py         读 .env
   log.py            UTF-8 日志（本机 GBK 坑）
@@ -44,6 +45,8 @@ bot/
   dispatch.py       消息并发分发（同人保序）
   reply.py          先回执后答复（慢消息不冷场）
   ratelimit.py      滑动窗口限流（/raw 防刷）
+  repeat.py         群复读（连续同文本 + 多人 → 复读）
+  bili.py           B站分享识别（找链接 → 查接口 → 发卡片）
   keys.py           Esc 键监听（优雅退出）
   agent.py          转发给本地 AI 网关（= 人格）
   ecust.py          直连学校网关（裸模型，可配人设）
@@ -52,7 +55,7 @@ bot/
     auth.py         取 token + 缓存
     gateway.py      取 WS 地址
     client.py       长连接：心跳 / 事件 / 重连
-    api.py          发私聊消息
+    api.py          发私聊 / 群消息 / 图文卡片
 ```
 
 ## 跑起来
@@ -98,9 +101,59 @@ python -m venv venv
 - `/model [名字]` — 查看 / 切换当前 ECUST 模型（按 openid 记忆）
 - `/raw <内容>` — 用当前 ECUST 模型回答（带上下文，最近 20 条）
 - `/ping` — 测当前 ECUST 模型连通性（不记入上下文）
+- `/bili` — 查看 / 开关本群的 B站识别（仅管理员，群聊专属）
 - `/restart` — 重启机器人（仅管理员；无白名单时所有人都是管理员）
 
 对话历史存在 `data/ecust_history.json`；人设可用 `.env` 的 `ECUST_SYSTEM_PROMPT` 配。
+
+## 群聊功能
+
+### 复读机（`bot/repeat.py`）
+
+群里没人 @ 机器人、也没人发 B 站链接的普通消息 → 喂给复读机：
+
+- 连续 `REPEAT_MIN_COUNT` 条**完全相同**的文本，且**至少 2 个不同的人**发过 → 触发
+  （一个人单刷不算；默认 3 条）
+- 触发后不立即发，等 `REPEAT_DELAY` 秒（默认 30）；期间同群出现**不同文本** → 取消
+  （话题继续了就不追）
+- **同一串只复读一次**，之后继续发相同内容不再触发，直到出现别的文本
+- 每个群各自维护状态，互不串扰
+
+⚠️ 复读走的是**主动消息**（不带 `msg_id`）：官方群被动回复窗口只有 5 分钟，
+复读本身是延后触发的，早过期了。主动消息受频控限制（未认证 30/qpm、单群 20/qpm）。
+
+### B站分享识别（`bot/bili.py`）
+
+消息里带 B 站链接 → 自动查视频信息 → 发**图文卡片**（标题 / UP / 时长 / 封面 / 链接）。
+
+- 官方协议**没有** OneBot 那套 `raw_message` / CQ 码，所以不能照抄 Nico 版。
+  这里的做法是**在事件数据里到处找链接**：`content` / `ark_data.fields.jump_url` /
+  `msg_elements[]`（引用消息）/ `attachments[].url`
+- 短链（b23.tv）跟一次 302 拿 BV 号（只读 Location，不下载页面）；结果按短链缓存
+- 拿不到封面（没接口 / 接口挂了）→ 退回发纯文本，**不会让整条消息发不出去**
+- 卡片发失败（没权限 / 字段不合法）→ 自动退回纯文本重发
+
+开关（`.env`）：
+
+| 变量 | 作用 |
+| --- | --- |
+| `BILI_ENABLE` | 总闸，`0/false/off` = 全关 |
+| `BILI_MODE` | `black`（默认，默认开）/ `white`（默认关，只开名单里的群） |
+| `BILI_OFF_GROUPS` | 黑名单初值（群 openid，逗号分隔） |
+| `BILI_ONLY_GROUPS` | 白名单初值 |
+
+名单持久化在 `data/bili_off.json`，运行时用 `/bili on` / `/bili off` 改（仅管理员）。
+私聊不受按群开关影响（只看总闸）。
+
+### 群聊上下文隔离
+
+群里按 `group_openid:member_openid` 隔离 session_key，不同群、不同人都不串上下文。
+
+### 群消息的协议限制
+
+- **GROUP_MESSAGE_CREATE**（不 @ 的群消息）需要群主在 QQ 里开启「机器人可获取的群聊消息范围 = 全部消息」，
+  否则服务端根本不推这个事件 —— 复读机和 B站识别都依赖它
+- 群 @ 机器人（GROUP_AT_MESSAGE_CREATE）永远可用
 
 ## 并发与响应（为什么不会堵）
 
@@ -163,5 +216,15 @@ schtasks /create /tn "PURANA_ECUST Bot" /tr "wscript.exe \"D:\CIC\QQbot\PURANA_E
 - [x] 命令权限分层（PUBLIC_COMMANDS）+ /raw 防刷（bot/ratelimit.py）
 - [x] 后台常驻：run_hidden.vbs / run.cmd / stop.cmd / logs.cmd / status.cmd
 - [x] 错误日志带到点：异常类型 / 用时 / 响应片段 + 给用户的提示语分档（超时/5xx/4xx 各说各的）
-- [ ] 群消息（目前只处理私聊）
-- [ ] 图片 / 富媒体消息
+- [x] 群聊地基：群消息收发 / @ 剥离 / 管理员权限 / 引用回复（REFIDX）/ 群上下文隔离
+- [x] 群复读机（bot/repeat.py）+ 离线自测（selftest.py）
+- [x] B站分享识别（bot/bili.py）+ 图文卡片发送 + /bili 按群开关
+- [ ] 图片 / 富媒体消息（msg_type=7，需先上传 file_info）
+- [ ] 人设管理 /system、/forget、/balance
+- [ ] 定时推送
+
+## 官方协议明确做不到的（别再设计）
+
+- 群聊表情表态 —— 官方仅频道支持
+- 合并转发 —— 群/私聊都没有这个接口
+- 戳一戳 —— 无接口

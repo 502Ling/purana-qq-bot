@@ -37,6 +37,14 @@ class Settings:
     # 其他
     admin_openid: str
     data_dir: Path
+    # 群复读
+    repeat_min_count: int
+    repeat_delay: float
+    # B站识别
+    bili_enabled: bool
+    bili_mode: str
+    bili_off_groups: tuple[str, ...]
+    bili_only_groups: tuple[str, ...]
 
     @property
     def token_cache(self) -> Path:
@@ -65,4 +73,17 @@ def load_settings() -> Settings:
 
         admin_openid=os.getenv("ADMIN_OPENID", "").strip(),
         data_dir=data_dir,
+
+        repeat_min_count=max(2, int(os.getenv("REPEAT_MIN_COUNT", "3"))),
+        repeat_delay=max(0.0, float(os.getenv("REPEAT_DELAY", "30"))),
+
+        bili_enabled=os.getenv("BILI_ENABLE", "1").strip().lower()
+        not in ("0", "false", "off", "no"),
+        bili_mode=os.getenv("BILI_MODE", "black").strip() or "black",
+        bili_off_groups=tuple(
+            g.strip() for g in os.getenv("BILI_OFF_GROUPS", "").split(",") if g.strip()
+        ),
+        bili_only_groups=tuple(
+            g.strip() for g in os.getenv("BILI_ONLY_GROUPS", "").split(",") if g.strip()
+        ),
     )

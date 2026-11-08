@@ -38,6 +38,7 @@ HELP_TEXT = """可用命令：
 /models - 列出学校网关(ECUST)的可用模型
 /model [名字] - 查看 / 切换 ECUST 模型
 /ping - 测当前 ECUST 模型连通性（不记入上下文）
+/bili - 查看 / 开关本群的 B 站识别（群聊专属）
 /restart - 重启机器人""".format(CHOOSE_MAX=CHOOSE_MAX)
 
 
@@ -65,6 +66,9 @@ class CommandContext:
     is_admin: bool = False                      # 当前发信人是不是管理员
     restart_requested: bool = False             # /restart 会把它置 True，由 run.py 善后
     rate_limit: object = None                   # bot.ratelimit.RateLimiter（给 /raw 防刷）
+    bili_switch: object = None                  # bot.bili.BiliSwitch（/bili 按群开关）
+    group_openid: str = ""                      # 群聊才有（/bili 是按群开关）
+    is_group: bool = False                      # 当前是不是群聊
 
 
 def current_model(ctx: CommandContext) -> str:
@@ -108,6 +112,8 @@ async def handle(text: str, ctx: CommandContext) -> str:
         return res
     if name == "help":
         return HELP_TEXT
+    if name == "bili":
+        return await _handle_bili(args, ctx)
     if name == "restart":
         if not ctx.is_admin:
             return "只有管理员能重启机器人"
@@ -116,6 +122,40 @@ async def handle(text: str, ctx: CommandContext) -> str:
     if name in ("models", "model", "raw", "forget", "ping"):
         return await _handle_ecust(name, args, ctx)
     return f"未知命令 /{name}，输入 /help 查看可用指令"
+
+
+async def _handle_bili(args: list[str], ctx: CommandContext) -> str:
+    """/bili —— 查看 / 开关本群的 B 站识别（仅管理员）。"""
+    sw = ctx.bili_switch
+    if sw is None:
+        return "B站识别开关不可用"
+    if not ctx.is_admin:
+        return "只有管理员能改这个开关。"
+    gid = ctx.group_openid
+
+    if not args:
+        if not sw.enabled:
+            return "B站识别：全局已关闭（BILI_ENABLE=0），单群开了也不会跑。"
+        if not ctx.is_group:
+            return "B站识别：私聊一直开，只受全局开关控制。"
+        state = "已开启" if sw.allowed("group", gid) else "已关闭"
+        return (
+            f"本群 B站识别：{state}\n当前模式：{sw.mode_label}\n"
+            "用 /bili on 或 /bili off 切换。"
+        )
+
+    head = args[0].lower()
+    if head in ("on", "开", "开启"):
+        if not ctx.is_group:
+            return "这是按群开关，私聊不用设。"
+        sw.set_group(gid, True)
+        return f"已开启本群（{gid[:12]}…）的 B站识别。"
+    if head in ("off", "关", "关闭"):
+        if not ctx.is_group:
+            return "这是按群开关，私聊不用设。"
+        sw.set_group(gid, False)
+        return f"已关闭本群（{gid[:12]}…）的 B站识别。"
+    return "用法：/bili 看状态；/bili on | /bili off 开关本群"
 
 
 async def _handle_ecust(name: str, args: list[str], ctx: CommandContext) -> str:
