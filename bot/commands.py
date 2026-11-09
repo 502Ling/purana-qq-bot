@@ -74,6 +74,11 @@ class CommandContext:
     admin_openids: tuple[str, ...] = ()         # 管理员白名单（可以有多个）
     author_ids: tuple[str, ...] = ()            # 本条消息里能拿到的所有用户标识
     quiet_unknown: bool = False                 # 未知命令静默（群里不 @ 时用）
+    # 富媒体：/image 命令用
+    media_enabled: bool = True                  # 富媒体总闸
+    media_dir: object = None                    # 本地固定图片目录（Path）
+    image_domains: tuple[str, ...] = ()         # 出站图片来源域名白名单
+    pending_media: list = field(default_factory=list)   # 本次要发出去的图（路径或 URL）
 
 
 def current_model(ctx: CommandContext) -> str:
@@ -129,6 +134,8 @@ async def handle(text: str, ctx: CommandContext) -> str:
         return await _handle_whoami(ctx)
     if name == "bili":
         return await _handle_bili(args, ctx)
+    if name == "image":
+        return await _handle_image(args, ctx)
     if name == "restart":
         if not ctx.is_admin:
             return "只有管理员能重启机器人"
@@ -192,6 +199,72 @@ async def _handle_bili(args: list[str], ctx: CommandContext) -> str:
         sw.set_group(gid, False)
         return f"已关闭本群（{gid[:12]}…）的 B站识别。"
     return "用法：/bili 看状态；/bili on | /bili off 开关本群"
+
+
+async def _handle_image(args: list[str], ctx: CommandContext) -> str:
+    """/image —— 发图。
+
+    两种用法：
+    - ``/image https://example.com/a.png`` —— 发一个公网可访问的图（域名要在白名单里）
+    - ``/image cat`` —— 发本地固定目录里名为 cat 的图（.png/.jpg 都行）
+
+    发图的活儿不在这里做：命令处理只负责**收集要发的图**（ctx.pending_media），
+    真正上传+发送由 run.py 在拿到 token 后做 —— 因为上传需要 access_token，
+    而命令层拿不到 session 之外的东西。
+    """
+    if not ctx.media_enabled:
+        return "发图功能已关闭。"
+
+    if not args:
+        return "用法：/image <图片网址 | 图片名>"
+
+    target = args[0].strip()
+    if not target:
+        return "用法：/image <图片网址 | 图片名>"
+
+    # 1) URL 形式
+    if target.startswith(("http://", "https://")):
+        if not _host_allowed(target, ctx.image_domains):
+            return (
+                "这个网址不在允许的域名里，下载不了。\n允许的域名："
+                + "、".join(ctx.image_domains or ("（无）",))
+            )
+        ctx.pending_media.append({"source": target, "kind": "image", "name": ""})
+        return "图来了。"
+
+    # 2) 本地文件形式
+    media_dir = ctx.media_dir
+    if media_dir is None:
+        return "图片目录没配置。"
+    name = target
+    # 补全扩展名（用户只打名字时）
+    candidates = [name]
+    if not any(name.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg")):
+        candidates = [name + ext for ext in (".png", ".jpg", ".jpeg")]
+
+    for cand in candidates:
+        # 防目录穿越：文件名里不许带路径分隔符
+        if "/" in cand or "\\" in cand or ".." in cand:
+            return "只能用图片名，不接受路径。"
+        p = media_dir / cand
+        if p.is_file():
+            ctx.pending_media.append({"source": str(p), "kind": "image", "name": cand})
+            return "图来了。"
+
+    return f"没找到 {target}（在 {media_dir} 里）"
+
+
+def _host_allowed(url: str, domains: tuple[str, ...]) -> bool:
+    """域名白名单检查（防 SSRF）。"""
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    return any(host == d or host.endswith("." + d) for d in domains)
 
 
 async def _handle_ecust(name: str, args: list[str], ctx: CommandContext) -> str:

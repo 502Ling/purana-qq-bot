@@ -285,6 +285,121 @@ async def test_admin_ids() -> None:
     check("quiet_unknown → 无权限命令静默", out8 == "", f"实际 {out8!r}")
 
 
+async def test_media() -> None:
+    print("\n== 富媒体（纯函数部分，不联网）==")
+    from bot import media, attachments
+    from bot.commands import CommandContext, handle
+
+    # 1) 从回复文本里提取「整行就是图片 URL」的行
+    urls = media.extract_image_urls(
+        "看图\nhttps://pic.example.com/a.png?x=1\n正文里提到 https://x.com/b.jpg 不算",
+        ("example.com",),
+    )
+    check("提取整行图片 URL", urls == ["https://pic.example.com/a.png?x=1"], f"实际 {urls}")
+
+    # 2) 域名不在白名单 → 不提取（防 SSRF）
+    urls = media.extract_image_urls(
+        "https://evil.com/a.png", ("example.com",)
+    )
+    check("白名单外域名不提取", urls == [], f"实际 {urls}")
+
+    # 3) strip 把整行图片 URL 删掉
+    text = media.strip_image_lines(
+        "看图\nhttps://pic.example.com/a.png\n结尾",
+        ("example.com",),
+    )
+    check("strip 删掉整行 URL", text == "看图\n结尾", f"实际 {text!r}")
+
+    # 4) 非整行的 URL 不删
+    text = media.strip_image_lines(
+        "见 https://x.com/b.jpg 详情", ("x.com",)
+    )
+    check("非整行 URL 保留", text == "见 https://x.com/b.jpg 详情", f"实际 {text!r}")
+
+    # 5) file_type 推断：png/jpg 走真图片，gif 降级成文件
+    check("png → file_type 1", media.file_type_for("image", "a.png") == 1)
+    check("jpg → file_type 1", media.file_type_for("image", "a.jpg") == 1)
+    check("gif → file_type 4（降级）", media.file_type_for("image", "a.gif") == 4)
+    check("video → file_type 2", media.file_type_for("video", "a.mp4") == 2)
+    check("voice → file_type 3", media.file_type_for("voice", "a.silk") == 3)
+
+    # 6) host_allowed 子域名匹配
+    check("子域名命中", media.host_allowed("https://a.example.com/x", ("example.com",)))
+    check("同级域名不命中", not media.host_allowed("https://nexample.com/x", ("example.com",)))
+
+    # 7) 入站图片提取：只认 image/*
+    imgs = attachments.extract_images({
+        "content": "",
+        "attachments": [
+            {"content_type": "image/png", "url": "https://qq.com/1.png"},
+            {"content_type": "audio/ogg", "url": "https://qq.com/2.og"},
+        ],
+    })
+    check("只提取图片附件", len(imgs) == 1 and imgs[0].content_type == "image/png", f"实际 {imgs}")
+
+    # 8) 入站图片：引用消息里的图也能提
+    imgs = attachments.extract_images({
+        "content": "",
+        "msg_elements": [
+            {"attachments": [{"content_type": "image/jpeg", "url": "https://qq.com/r.jpg"}]},
+        ],
+    })
+    check("引用消息里的图能提", len(imgs) == 1 and imgs[0].content_type == "image/jpeg", f"实际 {imgs}")
+
+    # 9) /image 命令：URL 形式（加进 pending_media）
+    ctx = CommandContext(openid="X", is_admin=True, media_enabled=True,
+                         image_domains=("example.com",))
+    out = await handle("/image https://pic.example.com/a.png", ctx)
+    check("/image URL 形式", out == "图来了。" and len(ctx.pending_media) == 1, f"实际 {out} {ctx.pending_media}")
+
+    # 10) /image 命令：白名单外域名拒绝
+    ctx = CommandContext(openid="X", is_admin=True, media_enabled=True,
+                         image_domains=("example.com",))
+    out = await handle("/image https://evil.com/a.png", ctx)
+    check("/image 白名单外拒绝", "不在允许" in out and not ctx.pending_media, f"实际 {out}")
+
+    # 11) /image 命令：总闸关了
+    ctx = CommandContext(openid="X", is_admin=True, media_enabled=False)
+    out = await handle("/image https://pic.example.com/a.png", ctx)
+    check("/image 总闸关", "已关闭" in out and not ctx.pending_media, f"实际 {out}")
+
+    # 12) /image 命令：本地文件形式（临时目录）
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        (p / "cat.png").write_bytes(b"fake")
+        ctx = CommandContext(openid="X", is_admin=True, media_enabled=True,
+                             media_dir=p, image_domains=("example.com",))
+        out = await handle("/image cat", ctx)
+        check("/image 本地文件", out == "图来了。" and len(ctx.pending_media) == 1, f"实际 {out} {ctx.pending_media}")
+
+        # 13) 本地文件不存在
+        ctx = CommandContext(openid="X", is_admin=True, media_enabled=True,
+                             media_dir=p, image_domains=("example.com",))
+        out = await handle("/image dog", ctx)
+        check("/image 本地文件不存在", "没找到" in out and not ctx.pending_media, f"实际 {out}")
+
+        # 14) 目录穿越防御
+        ctx = CommandContext(openid="X", is_admin=True, media_enabled=True,
+                             media_dir=p, image_domains=("example.com",))
+        out = await handle("/image ../secret.png", ctx)
+        check("/image 目录穿越拒绝", "不接受路径" in out and not ctx.pending_media, f"实际 {out}")
+
+
+def test_ecust_vision() -> None:
+    print("\n== ECUST 视觉（构造请求体，不联网）==")
+    from bot.ecust import EcustClient
+
+    client = EcustClient("https://x/api/v1", "key", "glm-4.7")
+    # ask_images 会构造多模态内容块 —— 这里只验证它不报错、能构造
+    import asyncio
+
+    # 用一个假的 session 跑不通，所以只验证方法存在和签名
+    check("ask_images 存在", hasattr(client, "ask_images"))
+    check("ask_content 存在", hasattr(client, "ask_content"))
+
+
 def test_switch() -> None:
     print("\n== B站开关 ==")
     import tempfile
@@ -315,6 +430,8 @@ def test_switch() -> None:
 async def main() -> int:
     await test_repeat()
     test_bili_extract()
+    await test_media()
+    test_ecust_vision()
     test_switch()
     await test_admin_ids()
     test_mentions()

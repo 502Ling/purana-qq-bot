@@ -51,6 +51,14 @@ class Settings:
     group_commands: tuple[str, ...]
     # 总闸：群里不 @ 机器人能不能发斜杠命令
     group_command_enable: bool
+    # 视觉模型（看图用）；空 = 不支持看图
+    vision_model: str
+    # 出站图片：允许的图片来源域名（防 SSRF）
+    image_domains: tuple[str, ...]
+    # 本地固定图片目录（/image 命令用）
+    image_dir: Path
+    # 总闸：要不要开富媒体（发图）
+    media_enabled: bool
 
     @property
     def admin_openid(self) -> str:
@@ -113,4 +121,19 @@ def load_settings() -> Settings:
             for c in os.getenv("GROUP_COMMANDS", "help,time,choose,echo,whoami").split(",")
             if c.strip()
         ),
+
+        # 看图用的视觉模型（实测 ECUST 上 glm-4.7 / qwen3.5 能看图，
+        # deepseek-v4.1-flash 不行）。留空 = 不开看图功能。
+        vision_model=os.getenv("VISION_MODEL", "").strip(),
+        # 出站图片来源域名白名单（逗号分隔）—— 防止机器人去下任意地址
+        image_domains=tuple(
+            d.strip().lower()
+            for d in os.getenv("IMAGE_DOMAINS", "qq.com,qpic.cn,gtimg.cn,bilibili.com,hdslb.com").split(",")
+            if d.strip()
+        ),
+        # 固定图片目录（/image 命令从这里找图）
+        image_dir=Path(os.getenv("IMAGE_DIR", str(data_dir / "images"))),
+        # 富媒体总闸：0 = 关掉发图能力
+        media_enabled=os.getenv("MEDIA_ENABLE", "1").strip().lower()
+        not in ("0", "false", "off", "no"),
     )

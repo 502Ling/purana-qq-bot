@@ -18,7 +18,7 @@ from typing import Any
 import aiohttp
 
 from bot.agent import AgentClient
-from bot import bili
+from bot import attachments, bili, media
 from bot.commands import CommandContext, handle as handle_command
 from bot.config import load_settings
 from bot.dispatch import Dispatcher
@@ -63,6 +63,11 @@ async def main() -> bool:
         settings.ecust_base_url, settings.ecust_api_key, settings.ecust_model
     )
     history = History(settings.data_dir / "ecust_history.json")
+    # 固定图片目录（/image 命令从这里找图）
+    try:
+        settings.image_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        log.warning("图片目录创建失败：%s", settings.image_dir)
     bili_switch = bili.BiliSwitch(
         settings.data_dir / "bili_off.json",
         settings.bili_enabled,
@@ -112,12 +117,14 @@ async def main() -> bool:
             author_ids: tuple[str, ...],
             member_role: str = "",
             quiet_unknown: bool = False,
-        ) -> tuple[str, bool]:
-            """算出回复文本，以及是否请求重启。
+            images: list[str] = None,      # 入站图片（data URL），空 = 没图
+        ) -> tuple[str, bool, list[dict]]:
+            """算出回复文本、是否请求重启、要附带发出去的图。
 
             openid 用于权限/记忆标识；session_key 是 agent 或 ECUST 记忆隔离用的键
             （私聊=openid，群里=group_openid+member 组合，避免串上下文）。
             quiet_unknown=True 时，未知/无权限的命令返回空串（不刷屏）。
+            images 是入站图片（已转成 data URL）—— 有图且配了视觉模型时走 ECUST 视觉模型。
             """
             r = route(text)
             if r.kind == "command":
@@ -136,16 +143,39 @@ async def main() -> bool:
                     author_ids=author_ids,
                     admin_openids=settings.admin_openids,
                     quiet_unknown=quiet_unknown,
+                    media_enabled=settings.media_enabled,
+                    media_dir=settings.image_dir,
+                    image_domains=settings.image_domains,
                 )
-                return await handle_command(r.payload, cmd), cmd.restart_requested
+                reply = await handle_command(r.payload, cmd)
+                return reply, cmd.restart_requested, list(cmd.pending_media)
 
             if not is_admin_of(author_ids, member_role, scene):
                 # 白名单外的人不接。（原来写的是「FOX-2」，那是 Nico_21599 的代号，
                 # 本项目的角色是普拉娜。）
-                return "普拉娜正在执行任务，暂时不能聊天。", False
+                return "普拉娜正在执行任务，暂时不能聊天。", False, []
+
+            # 带图：走 ECUST 视觉模型（agent 那边的模型不支持多模态）
+            if images and settings.vision_model:
+                reply, _ok = await ecust.ask_images(
+                    session,
+                    r.payload or "这张图里有什么？",
+                    images,
+                    model=settings.vision_model,
+                    system=settings.ecust_system_prompt or None,
+                )
+                return reply, False, []
 
             reply = await agent.ask(session, r.payload, session_key)
-            return reply, False
+
+            # 回复里「整行就是图片网址」→ 把图发出去，并从文本里删掉那行
+            pending: list[dict] = []
+            if settings.media_enabled:
+                urls = media.extract_image_urls(reply, settings.image_domains)
+                if urls:
+                    pending = [{"source": u, "kind": "image", "name": ""} for u in urls]
+                    reply = media.strip_image_lines(reply, settings.image_domains)
+            return reply, False, pending
 
         async def handle_message(
             scene: str,              # "c2c" 私聊 / "group" 群聊
@@ -157,6 +187,7 @@ async def main() -> bool:
             msg_ref_id: str = "",    # 群里被 @ 时，要引用的那条消息 REFIDX（可选）
             author_ids: tuple[str, ...] = (),  # 候选用户标识（判管理员用）
             member_role: str = "",               # 群里身份：owner/admin/member
+            images: list[str] = None,           # 入站图片（data URL）
         ) -> None:
             async def sender(message: str, seq: int) -> None:
                 token = await tokens.get(session)
@@ -169,16 +200,49 @@ async def main() -> bool:
                     await send_c2c(session, token, openid, message, msg_id, msg_seq=seq)
 
             flag: dict[str, bool] = {}
+            pending_media: list[dict] = []
 
             async def reply_coro() -> str:
-                reply, restart = await compute_reply(
+                reply, restart, pending = await compute_reply(
                     text, openid, session_key, scene, group_openid, author_ids,
-                    member_role,
+                    member_role, images=images,
                 )
                 flag["restart"] = restart
+                pending_media.extend(pending)
                 return reply
 
-            await deliver(sender, reply_coro(), ack_after=ACK_AFTER, ack_text=ACK_TEXT, ack_after_long=ACK_AFTER_LONG, ack_text_long=ACK_TEXT_LONG)
+            async def send_extras(seq: int) -> None:
+                """把要发的图发出去（跟在文本回复后面，用下一个 msg_seq）。"""
+                if not pending_media:
+                    return
+                if not settings.media_enabled:
+                    return
+                scope = media.SCOPE_GROUP if scene == "group" else media.SCOPE_C2C
+                target = group_openid if scene == "group" else openid
+                token = await tokens.get(session)
+                for item in pending_media:
+                    try:
+                        await media.send_media_file(
+                            session, token, scope, target,
+                            item["source"],
+                            kind=item.get("kind", "image"),
+                            file_name=item.get("name", ""),
+                            msg_id=msg_id,
+                            msg_seq=seq,
+                            msg_ref_id=msg_ref_id,
+                        )
+                    except media.MediaError as exc:
+                        log.warning("发图失败：%s", exc)
+                    except Exception:
+                        log.exception("发图时出错")
+                    seq += 1
+
+            await deliver(
+                sender, reply_coro(),
+                ack_after=ACK_AFTER, ack_text=ACK_TEXT,
+                ack_after_long=ACK_AFTER_LONG, ack_text_long=ACK_TEXT_LONG,
+                on_reply=send_extras,
+            )
 
             # 回复发出去之后再退，别把 /restart 的提示吞了
             if flag.get("restart"):
@@ -353,6 +417,9 @@ async def main() -> bool:
             # 所以不能拿「content 为空」当过滤条件。
             bili_candidate = bili.has_link(data)
 
+            # 入站图片：也是**同步**判断（不发网络请求），真有图才丢后台去下载。
+            inbound_images = attachments.extract_images(data)
+
             # 群里**没** @ 机器人的普通消息：只喂复读机 + B站识别，不烧 token
             if scene == "group" and not at_bot:
                 if author.get("bot"):
@@ -395,7 +462,7 @@ async def main() -> bool:
                 async def _bili_miss() -> None:
                     await _handle_text(
                         scene, openid, group_openid, text, msg_id, session_key, msg_ref_id,
-                        author_ids, member_role,
+                        author_ids, member_role, images=inbound_images,
                     )
 
                 dispatcher.spawn(
@@ -410,7 +477,7 @@ async def main() -> bool:
                 group_openid if scene == "group" else openid,
                 _handle_text(
                     scene, openid, group_openid, text, msg_id, session_key, msg_ref_id,
-                    author_ids, member_role,
+                    author_ids, member_role, images=inbound_images,
                 ),
             )
 
@@ -428,13 +495,13 @@ async def main() -> bool:
             先试被动回复（带 msg_id，额度更宽）；被拒（过期/越权）就退成主动消息重发。
             quiet_unknown=True：未知/无权限的命令不刷屏（返回空串就不发）。
             """
-            reply, restart = await compute_reply(
+            reply, restart, pending = await compute_reply(
                 text, openid, session_key, "group", group_openid, author_ids,
                 member_role, quiet_unknown=True,
             )
             if restart:
                 restart_event.set()
-            if not reply:
+            if not reply and not pending:
                 return
             token = await tokens.get(session)
             status = await send_group_msg(
@@ -444,6 +511,18 @@ async def main() -> bool:
                 log.warning("群命令被动回复失败（HTTP %s），改发主动消息", status)
                 await send_group_msg(session, token, group_openid, reply)
             log.info("群命令已回复：%s", text[:40])
+
+            # 附带的图（/image 命令）：用 msg_seq=2 接着发
+            for item in pending:
+                try:
+                    await media.send_media_file(
+                        session, token, media.SCOPE_GROUP, group_openid,
+                        item["source"], kind=item.get("kind", "image"),
+                        file_name=item.get("name", ""),
+                        msg_id=msg_id, msg_seq=2,
+                    )
+                except media.MediaError as exc:
+                    log.warning("群命令发图失败：%s", exc)
 
         async def _handle_text(
             scene: str,
@@ -455,6 +534,7 @@ async def main() -> bool:
             msg_ref_id: str = "",
             author_ids: tuple[str, ...] = (),
             member_role: str = "",
+            images: list = None,          # 入站图片附件（attachments.InboundImage）
         ) -> None:
             """普通消息（@ 机器人的私聊/群聊）→ 走命令或 agent。
 
@@ -466,14 +546,22 @@ async def main() -> bool:
             #  单独处理 @ 而后面没别的字时，剥完是空的 → 直接不回复）
             if scene == "group":
                 text, _at = detect_at_bot({"content": text}, settings.app_id)
-                if not text:
+                if not text and not images:
                     return
+
+            # 下载入站图片（转 data URL）—— 给视觉模型用。
+            # 这里会发网络请求，但本函数已经不在收消息的循环里了（丢给 dispatcher）。
+            image_urls: list[str] = []
+            if images and settings.vision_model:
+                image_urls = await attachments.download_images(session, images)
+                if image_urls:
+                    log.info("收到 %s 张图，走视觉模型 %s", len(image_urls), settings.vision_model)
 
             label = "群聊" if scene == "group" else "私聊"
             log.info("收到%s %s：%s", label, scene == "group" and f"group={group_openid[:100]}" or f"openid={openid[:10]}", text[:60])
             await handle_message(
                 scene, openid, group_openid, text, msg_id, session_key, msg_ref_id,
-                author_ids, member_role,
+                author_ids, member_role, images=image_urls,
             )
 
         client = QQBotClient(session, tokens, on_event)

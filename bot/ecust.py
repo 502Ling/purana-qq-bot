@@ -76,16 +76,63 @@ class EcustClient:
 
         history 是之前的 {role, content} 列表，带上她就"记得"上文。
         """
+        return await self.ask_content(
+            session,
+            [{"type": "text", "text": text}],
+            model=model,
+            history=history,
+            system=system,
+        )
+
+    async def ask_images(
+        self,
+        session: aiohttp.ClientSession,
+        text: str,
+        images: list[str],
+        model: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        system: str | None = None,
+    ) -> tuple[str, bool]:
+        """带图片地问裸模型。images 是 data URL 列表（如 data:image/png;base64,...）。
+
+        ⚠️ **只有视觉模型能用**（实测 ECUST 上 glm-4.7 / qwen3.5 可看图，
+        deepseek-v4.1-flash 不行）。传错模型会得到一句空回复或格式报错。
+        """
+        content: list[dict[str, object]] = [{"type": "text", "text": text}]
+        for url in images:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        return await self.ask_content(
+            session, content, model=model, history=history, system=system
+        )
+
+    async def ask_content(
+        self,
+        session: aiohttp.ClientSession,
+        content: list[dict[str, object]],
+        model: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        system: str | None = None,
+    ) -> tuple[str, bool]:
+        """发一条多模态消息。content 是 OpenAI 格式的内容块列表。
+
+        纯文本时 content 就是 [{"type": "text", "text": "..."}]，
+        带图时再追加 {"type": "image_url", ...} 块。
+        """
         model = model or self._default_model
 
-        messages: list[dict[str, str]] = []
+        messages: list[dict] = []
         if system:
             messages.append({"role": "system", "content": system})
         if history:
             messages.extend(history)
-        messages.append({"role": "user", "content": text})
+        messages.append({"role": "user", "content": content})
 
         payload = {"model": model, "messages": messages}
+
+        # 日志里的字数统计：图片块算长度但不是字数，估个够用的数就行
+        prompt_len = sum(
+            len(str(c.get("text") or "")) for c in content if c.get("type") == "text"
+        )
 
         t0 = time.monotonic()
         try:
@@ -102,7 +149,7 @@ class EcustClient:
                 "调用 ECUST 网关失败：%s（model=%s，prompt %d 字，用时 %.1fs，超时 %ss）",
                 describe_exc(exc),
                 model,
-                len(text),
+                prompt_len,
                 time.monotonic() - t0,
                 self._timeout.total,
             )
@@ -138,8 +185,19 @@ class EcustClient:
             return f"（ECUST 出错：{msg}）", False
 
         try:
-            content = data["choices"][0]["message"]["content"] or "（空回复）"
+            content_out = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError):
             log.warning("ECUST 返回格式异常（用时 %.1fs）：%s", elapsed, short(data))
             return "（ECUST 返回格式异常）", False
-        return content, True
+
+        # content 可能是 str，也可能是内容块数组（部分网关这么返）
+        if isinstance(content_out, list):
+            content_out = "".join(
+                str(c.get("text") or "") for c in content_out if isinstance(c, dict)
+            )
+        content_out = (content_out or "").strip()
+        if not content_out:
+            # 视觉模型遇到不支持的模型时，常见就是返回空 —— 给个能看懂的提示
+            log.warning("ECUST 返回空回复（model=%s，可能不支持多模态）", model)
+            return "（她没能看清这张图，换个说法或换个别的问题试试）", False
+        return content_out, True

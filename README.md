@@ -158,6 +158,54 @@ BV1GUH56pEHj
 名单持久化在 `data/bili_off.json`，运行时用 `/bili on` / `/bili off` 改（仅管理员）。
 私聊不受按群开关影响（只看总闸）。
 
+### 富媒体 / 看图（`bot/media.py` + `bot/attachments.py`）
+
+发图、收图、模型看图，三条链路都通了（QQ 官方协议 `msg_type=7`）。
+
+#### 发图
+
+- `/image <图片网址>` —— 发一张公网可访问的图（域名要在白名单里）
+- `/image <图片名>` —— 发 `data/images/` 目录里固定放的图（.png/.jpg）
+- **模型回复里出现「单独一行的图片网址」→ 自动把图发出去**（网址从文本里删掉，避免重复）
+
+内部流程（两步，不能省）：
+
+1. 上传：`POST /v2/{users|groups}/{id}/files` → 拿 `file_info`（不透明串，直接透传）
+2. 发送：`POST /v2/{users|groups}/{id}/messages`，`msg_type=7` + `media.file_info`
+
+⚠️ **file_info 有 ttl**（响应里 `ttl: 300` = 5 分钟后失效，0 = 长期），**不能缓存复用**，
+每次发图都现传现发。单聊和群聊的上传接口互相隔离（群上传的只能发群）。
+
+上传方式三种，按大小自动选：
+
+- **URL 上传**：传公网 URL，QQ 服务端去下载（适合模型给的图）
+- **二进制直传**：base64，**上限 5MB**（适合本地小图）
+- **分片上传**：>5MB 走这条（预上传 → 逐片 PUT → 确认 → 合并）
+
+格式限制：图片只认 png/jpg（gif/webp 会 850019）→ 自动降级成 `file_type=4`（文件）发出去；
+语音只认 silk/mp3/wav，视频只认 mp4。
+
+#### 收图 + 看图（视觉模型）
+
+用户发来的图在 `attachments[]` 里（content 只有文字）→ 下载 → 转 data URL →
+喂给 ECUST 的视觉模型（`.env` 的 `VISION_MODEL`）。
+
+- 实测 ECUST 上 **glm-4.7 / qwen3.5 能看图**，deepseek-v4.1-flash 不行
+- 本地 OpenClaw 网关（agent 主路）的模型不支持多模态 → 带图的消息自动改走 ECUST 视觉模型
+- 图只认官方 CDN 域名（白名单，防 SSRF），单张 ≤5MB，最多 3 张
+
+#### 配置（.env）
+
+| 变量 | 作用 |
+| --- | --- |
+| `MEDIA_ENABLE` | 富媒体总闸，`0` = 关掉发图 |
+| `VISION_MODEL` | 看图用的视觉模型（留空 = 不开看图） |
+| `IMAGE_DOMAINS` | 出站图片允许的域名（逗号分隔，默认 qq 系 + bilibili） |
+| `IMAGE_DIR` | 固定图片目录（/image 命令用，默认 data/images） |
+
+> 为什么 /image 只发图、不转发用户发的图给 agent：OpenClaw 那边的模型不吃多模态，
+> 转过去只会得到一句「看不太清」。用户发图想看，直接带文字问就行（走 VISION_MODEL）。
+
 ### 群里发命令
 
 群里**不 @ 机器人**也能发命令（可用 `GROUP_COMMAND_ENABLE=0` 关掉）：
