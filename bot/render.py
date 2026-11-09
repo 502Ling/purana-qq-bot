@@ -1,19 +1,26 @@
 """把文字渲染成图片（Pillow）。
 
 用途：QQ 的文字消息又长又窄，读起来费劲；把命令输出、说明、表格之类的东西
-渲染成一张图发出去，体验好得多（比如 /help）。
+渲染成一张一张的图发出去，体验好得多（比如 /help）。
 
-⚠️ 两个坑：
+设计原则（502 定的）：**简约**、**字体统一**。
+
+⚠️ 踩过的坑：
 1. **雅黑渲染不了 emoji** —— 会变成豆腐块（□）。所以渲染前把 emoji 去掉。
 2. **中英文混排的换行**：中文没有空格，不能按单词断。所以这里按「字符」逐个量宽度，
    但英文单词尽量不拆开（拆成 "hel" + "lo" 很难看）。
+3. **繁简**：用 Windows 自带的 LCMapStringW 强制转简体（详见 to_simplified 的注释）。
+4. **字体必须统一**：正文和标题要从**同一个字体家族**取，否则看着像两种字体。
+   所以先定家族，再分别取 Regular / Bold —— 不能各自 fallback。
 
 只用 Pillow + Windows 自带字体，不额外拉依赖。
 """
 from __future__ import annotations
 
+import ctypes
 import logging
 import re
+from ctypes import wintypes
 from pathlib import Path
 
 log = logging.getLogger("purana.render")
@@ -32,40 +39,109 @@ except Exception:  # pragma: no cover
         def new(*a, **kw):
             raise RuntimeError("Pillow 未安装，无法把文字渲染成图片")
 
-        @staticmethod
-        def open(*a, **kw):
-            raise RuntimeError("Pillow 未安装，无法把文字渲染成图片")
-
     Image = _FakeImage()  # type: ignore
 else:
     from PIL import Image, ImageDraw, ImageFont
 
-# 字体候选（Windows 自带）。第一个存在的就用。
-FONT_REGULAR = [
-    r"C:\Windows\Fonts\msyh.ttc",       # 微软雅黑
-    r"C:\Windows\Fonts\simsun.ttc",     # 宋体
-    r"C:\Windows\Fonts\consola.ttf",    # Consolas（纯英文时的兜底）
-]
-FONT_BOLD = [
-    r"C:\Windows\Fonts\msyhbd.ttc",     # 微软雅黑 Bold
-    r"C:\Windows\Fonts\msyh.ttc",
-    r"C:\Windows\Fonts\simhei.ttf",     # 黑体
+
+# ---------------------------------------------------------------- 繁简转换
+
+_LCMAP_SIMPLIFIED_CHINESE = 0x02000000
+_LOCALE_ZH_CN = "zh-CN"
+
+try:
+    _kernel32 = ctypes.windll.kernel32
+    _kernel32.LCMapStringEx.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        wintypes.LPWSTR,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.LPARAM,
+    ]
+    _kernel32.LCMapStringEx.restype = ctypes.c_int
+    HAS_LCMAP = True
+except Exception:  # pragma: no cover - 非 Windows
+    HAS_LCMAP = False
+
+
+def to_simplified(text: str) -> str:
+    """繁体 → 简体（Windows 自带的 LCMapStringW）。
+
+    为什么需要：502 要求「字体统一」，那就顺带保证**字也统一**——
+    不管源文本是繁是简，渲染出来的都是简体。
+
+    ⚠️ **长度必须按 UTF-16 code unit 算，不能用 Python 的 len()**：
+    Windows 那边字符串是 UTF-16，emoji 这类非 BMP 字符占 2 个 code unit，
+    而 Python 的 len() 只算 1 个 → 算出来的长度偏小，**末尾的字符会被截掉**
+    （踩过：'😀 test' 被截成 '😀 tes'）。
+
+    转换失败就原样返回（宁可不变，也不要弄坏内容）。
+    """
+    if not text or not HAS_LCMAP:
+        return text
+    try:
+        src = ctypes.create_unicode_buffer(text)
+        # UTF-16 code unit 数（不含结尾的 \0）
+        src_len = len(text.encode("utf-16-le")) // 2
+        n = _kernel32.LCMapStringEx(
+            _LOCALE_ZH_CN, _LCMAP_SIMPLIFIED_CHINESE,
+            src, src_len, None, 0, None, None, 0,
+        )
+        if n <= 0:
+            return text
+        buf = ctypes.create_unicode_buffer(n)
+        r = _kernel32.LCMapStringEx(
+            _LOCALE_ZH_CN, _LCMAP_SIMPLIFIED_CHINESE,
+            src, src_len, buf, n, None, None, 0,
+        )
+        if r <= 0:
+            return text
+        return buf[:r].rstrip("\x00")
+    except Exception as exc:  # pragma: no cover
+        log.warning("繁简转换失败，原样返回：%s", exc)
+        return text
+
+
+# ---------------------------------------------------------------- 字体
+
+# 字体家族：正文和标题**必须来自同一个家族**，否则看着像两种字体。
+# 每项 = (Regular 路径, Bold 路径)。找不到 Bold 就用 Regular。
+FONT_FAMILIES: list[tuple[str, str]] = [
+    (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyhbd.ttc"),   # 微软雅黑
+    (r"C:\Windows\Fonts\simhei.ttf", r"C:\Windows\Fonts\simhei.ttf"),  # 黑体（无粗体）
+    (r"C:\Windows\Fonts\simsun.ttc", r"C:\Windows\Fonts\simsunb.ttf"), # 宋体
+    (r"C:\Windows\Fonts\consola.ttf", r"C:\Windows\Fonts\consolab.ttf"),  # Consolas（纯 ASCII 兜底）
 ]
 
-# 配色（深色卡片）
+
+def _resolve_family() -> tuple[str, str]:
+    """选一个**完整可用**的字体家族，返回 (Regular, Bold)。"""
+    for regular, bold in FONT_FAMILIES:
+        if Path(regular).is_file() and Path(bold).is_file():
+            return regular, bold
+    # 退而求其次：只有 Regular 也能用
+    for regular, _bold in FONT_FAMILIES:
+        if Path(regular).is_file():
+            return regular, regular
+    return "", ""
+
+
+# 配色（深色为主，简约）
 BG = (24, 25, 33)
-BG_TITLE = (32, 34, 44)
-FG = (226, 228, 236)
-FG_DIM = (140, 145, 165)
-ACCENT = (122, 162, 247)
+FG = (228, 230, 238)
+TITLE_FG = (140, 168, 248)
+SEPARATOR = (58, 61, 76)
 
 PADDING = 36
 TITLE_SIZE = 30
-BODY_SIZE = 22
-LINE_SPACING = 1.62
-MAX_WIDTH = 940          # 卡片最大内容宽度（超了会换行）
+BODY_SIZE = 24
+LINE_SPACING = 1.6
+MAX_WIDTH = 980          # 卡片最大内容宽度（超了会换行）
 MIN_WIDTH = 320          # 内容很少时的最小宽度
-CORNER = 18
 
 # emoji / 符号区：雅黑渲染不了，直接剔掉（否则是豆腐块）
 _EMOJI_RE = re.compile(
@@ -85,16 +161,8 @@ _EMOJI_RE = re.compile(
 _WORD_RE = re.compile(r"[A-Za-z0-9_\-+./:@#$%&*]+")
 
 
-def _find_font(candidates: list[str]) -> str | None:
-    for path in candidates:
-        if Path(path).is_file():
-            return path
-    return None
-
-
-def _load_font(candidates: list[str], size: int):
+def _load_font(path: str, size: int):
     """加载字体；找不到就用 Pillow 默认字体（会丑，但不会崩）。"""
-    path = _find_font(candidates)
     if path:
         try:
             return ImageFont.truetype(path, size)
@@ -107,9 +175,15 @@ def _load_font(candidates: list[str], size: int):
 
 
 def clean_text(text: str) -> str:
-    """清掉渲染不出来的字符（emoji），并统一换行符。"""
+    """渲染前的清洗：统一换行 → 去 emoji → 转简体。
+
+    顺序有讲究：
+    - 先去 emoji：emoji 是非 BMP 字符，会影响后面繁简转换的长度计算
+    - 再转简体：保证输出来源一致
+    """
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     text = _EMOJI_RE.sub("", text)
+    text = to_simplified(text)
     # 去掉行尾空格（多行字符串拼接时常有）
     lines = [ln.rstrip() for ln in text.split("\n")]
     return "\n".join(lines)
@@ -153,24 +227,6 @@ def _wrap_line(draw, line: str, font, max_width: int) -> list[str]:
     return out
 
 
-def _measure(draw, body_font, title_font, title: str, body_lines: list[str], max_width: int) -> tuple[int, int]:
-    """算内容尺寸：(宽, 高)。"""
-    line_h = int(BODY_SIZE * LINE_SPACING)
-    content_w = 0
-
-    for ln in body_lines:
-        content_w = max(content_w, int(draw.textlength(ln, font=body_font)))
-
-    title_h = 0
-    if title:
-        content_w = max(content_w, int(draw.textlength(title, font=title_font)))
-        title_h = int(TITLE_SIZE * 1.7)
-
-    width = max(MIN_WIDTH, min(MAX_WIDTH, content_w))
-    height = title_h + len(body_lines) * line_h
-    return width, height
-
-
 def render_text(
     text: str,
     title: str = "",
@@ -180,13 +236,16 @@ def render_text(
     """把文字渲染成一张图。返回 PIL Image。"""
     if not PIL_AVAILABLE:
         raise RuntimeError("Pillow 未安装，无法把文字渲染成图片")
+
     text = clean_text(text)
     title = clean_text(title).replace("\n", " ").strip()
 
-    body_font = _load_font(FONT_REGULAR, BODY_SIZE)
-    title_font = _load_font(FONT_BOLD, TITLE_SIZE)
+    # 字体家族：正文和标题同源（只有粗细不同）
+    regular_path, bold_path = _resolve_family()
+    body_font = _load_font(regular_path, BODY_SIZE)
+    title_font = _load_font(bold_path, TITLE_SIZE)
 
-    # 先画到一张临时图上量宽度（ImageDraw 需要有画布才能量）
+    # 先画到临时图上量宽度（ImageDraw 需要有画布才能量）
     probe = Image.new("RGB", (10, 10))
     pdraw = ImageDraw.Draw(probe)
 
@@ -206,42 +265,32 @@ def render_text(
             content_w = max(content_w, int(pdraw.textlength(title, font=title_font)))
         content_w = max(MIN_WIDTH - PADDING * 2, min(MAX_WIDTH - PADDING * 2, content_w))
 
-    title_h = int(TITLE_SIZE * 1.7) if title else 0
+    title_h = int(TITLE_SIZE * 1.9) if title else 0
     line_h = int(BODY_SIZE * LINE_SPACING)
     img_w = content_w + PADDING * 2
     img_h = title_h + len(body_lines) * line_h + PADDING * 2
 
-    bg = BG
-    fg = FG
-    accent = ACCENT
-    bg_title = BG_TITLE
+    bg, fg, title_fg, sep = BG, FG, TITLE_FG, SEPARATOR
     if theme == "light":
-        bg, fg, accent, bg_title = (250, 250, 252), (32, 34, 42), (52, 100, 210), (238, 240, 246)
+        bg, fg, title_fg, sep = (
+            (250, 250, 252), (34, 36, 44), (48, 96, 205), (222, 225, 232)
+        )
 
     img = Image.new("RGB", (img_w, img_h), bg)
     draw = ImageDraw.Draw(img)
 
-    # 圆角背景（画在一张 mask 上）
-    mask = Image.new("L", (img_w, img_h), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        [0, 0, img_w - 1, img_h - 1], radius=CORNER, fill=255
-    )
-
     y = PADDING
     if title:
-        # 标题栏
-        draw.rectangle([0, 0, img_w, title_h], fill=bg_title)
-        draw.rectangle([0, title_h - 2, img_w, title_h], fill=accent)
-        draw.text((PADDING, int(title_h * 0.28)), title, font=title_font, fill=fg)
-        y = title_h + int(PADDING * 0.6)
+        # 简约：标题就是一行字 + 一条细分隔线，不做标题栏底色
+        draw.text((PADDING, y), title, font=title_font, fill=title_fg)
+        y += int(TITLE_SIZE * 1.45)
+        draw.line([(PADDING, y), (img_w - PADDING, y)], fill=sep, width=1)
+        y += int(PADDING * 0.5)
 
     for ln in body_lines:
         draw.text((PADDING, y), ln, font=body_font, fill=fg)
         y += line_h
 
-    # 圆角：把圆角外的像素涂成和背景同色（PNG 不支持透明圆角时用）
-    flat = Image.new("RGB", (img_w, img_h), bg)
-    img = Image.composite(img, flat, mask)
     return img
 
 

@@ -420,7 +420,37 @@ def test_render() -> None:
     check("英文单词完整", "Mixed" in toks and "content" in toks, f"实际 {toks}")
     check("中文逐字", "中" in toks and "排" in toks, f"实际 {toks}")
 
-    # 4) 渲染出图（尺寸合理、不报错）
+    # 4) 繁简转换
+    check("繁转简可用", render.HAS_LCMAP)
+    if render.HAS_LCMAP:
+        check("繁体转简体", render.to_simplified("僅顯示幫助資訊") == "仅显示帮助资讯",
+              f"实际 {render.to_simplified('僅顯示幫助資訊')!r}")
+        check("简体保持不变", render.to_simplified("仅显示帮助") == "仅显示帮助",
+              f"实际 {render.to_simplified('仅显示帮助')!r}")
+        # ⚠️ 回归：emoji（非 BMP）不能被截断
+        #    Windows 那边按 UTF-16 code unit 算长度，Python len() 会少算
+        for case in ["\U0001F600 test", "\U0001F600\U0001F600 abc", "a\U0001F600b",
+                     "hello \U0001F600 world end"]:
+            check(f"emoji 不被截断 {case!r}", render.to_simplified(case) == case,
+                  f"实际 {render.to_simplified(case)!r}")
+        check("英文数字不受影响", render.to_simplified("hello world 123 /help img")
+              == "hello world 123 /help img")
+
+    # 5) 字体统一：正文和标题必须来自同一个家族
+    regular, bold = render._resolve_family()
+    check("字体家族有 Regular", bool(regular), f"实际 {regular!r}")
+    check("字体家族有 Bold", bool(bold), f"实际 {bold!r}")
+    # ⚠️ 判据是字体**家族名**（getname），不是文件名：
+    #    雅黑 Regular 是 msyh.ttc、Bold 是 msyhbd.ttc，文件名不同但同源。
+    if regular and bold and render.PIL_AVAILABLE:
+        from PIL import ImageFont
+
+        fam_r = ImageFont.truetype(regular, 20).getname()
+        fam_b = ImageFont.truetype(bold, 20).getname()
+        check("正文标题同源（家族名一致）", fam_r[0] == fam_b[0],
+              f"实际 {fam_r} vs {fam_b}")
+
+    # 6) 渲染出图（尺寸合理、不报错）
     if render.PIL_AVAILABLE:
         img = render.render_text("hello 普拉娜\n第二行", title="测试")
         check("渲染出图", img.width > 0 and img.height > 0, f"实际 {img.size}")
@@ -429,12 +459,12 @@ def test_render() -> None:
               render.render_text("x").height,
               "标题栏高度不对")
 
-        # 5) 长文本会折行（行数变多）
+        # 7) 长文本会折行（行数变多）
         img2 = render.render_text("很长的文字" * 100)
         check("长文本折行后变高", img2.height > render.render_text("短").height,
               f"实际 {img2.size}")
 
-        # 6) 存文件
+        # 8) 存文件
         import tempfile
         from pathlib import Path
         with tempfile.TemporaryDirectory() as td:
