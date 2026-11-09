@@ -63,6 +63,8 @@ class Settings:
     asimg_title: str
     # 渲染图片的配色主题（dark / light）
     render_theme: str
+    # 渲染图片的缓存目录（按内容哈希命名，重复内容不重复渲染）
+    render_dir: Path
 
     @property
     def admin_openid(self) -> str:
@@ -144,4 +146,6 @@ def load_settings() -> Settings:
         asimg_title=os.getenv("ASIMG_TITLE", "").strip(),
         # 渲染配色主题
         render_theme=os.getenv("RENDER_THEME", "dark").strip().lower() or "dark",
+        # 渲染缓存目录（同一份内容只渲染一次）
+        render_dir=Path(os.getenv("RENDER_DIR", str(data_dir / "render_cache"))),
     )

@@ -35,7 +35,7 @@ HELP_TEXT = """可用命令：
 /time - 显示当前时间（含 Phigros 4.0 倒计时）
 /choose <选项1> <选项2> [...] - 从选项里随机选一个（最多 {CHOOSE_MAX} 个）
 /whoami - 显示你的 openid（加管理员白名单用）
-/help - 显示本帮助
+/help text - 显示本帮助的纯文本版
 —— 以下仅管理员 ——
 /test502 - 测试机器人是否在线
 /raw <内容> - 和普拉娜聊天（会记住上文）
@@ -44,6 +44,8 @@ HELP_TEXT = """可用命令：
 /model [名字] - 查看 / 切换 ECUST 模型
 /ping - 测当前 ECUST 模型连通性（不记入上下文）
 /bili - 查看 / 开关本群的 B 站识别
+/asimg <文字> - 把文字渲染成图片发出来
+/image <网址|图片名> - 发指定图片
 /restart - 重启机器人""".format(CHOOSE_MAX=CHOOSE_MAX)
 
 
@@ -86,6 +88,7 @@ class CommandContext:
     render_available: bool = False              # 能不能把文字渲染成图（Pillow）
     asimg_title: str = ""                       # /asimg 的标题（可留空）
     render_theme: str = "dark"                  # 渲染配色（dark / light）
+    render_dir: object = None                   # 渲染缓存目录（Path）
 
 
 def current_model(ctx: CommandContext) -> str:
@@ -136,10 +139,11 @@ async def handle(text: str, ctx: CommandContext) -> str:
             res += f"\nPhigros 4.0 已上线 {fmt_delta(-delta)}"
         return res
     if name == "help":
-        # /help img → 发图片版（文字太长时看着舒服）
-        if args and args[0].lower() in ("img", "image", "图片"):
-            return await _handle_help_image(ctx)
-        return HELP_TEXT
+        # 502 定：/help 默认回图片（手机上看着舒服）。
+        # 想拿纯文本（方便复制）用 /help text。
+        if args and args[0].lower() in ("text", "txt", "文字"):
+            return HELP_TEXT
+        return await _handle_help_image(ctx)
     if name == "asimg":
         return await _handle_asimg(args, ctx)
     if name == "whoami":
@@ -161,30 +165,34 @@ async def handle(text: str, ctx: CommandContext) -> str:
 
 
 async def _handle_help_image(ctx: CommandContext) -> str:
-    """/help img —— 把命令列表渲染成图片发出去。
+    """/help —— 把命令列表渲染成图片发出去。
 
-    文字版留着（方便复制）；图片版看着舒服（尤其在手机上）。
+    502 定：/help 默认就是图片版（手机上看着舒服）。
+    纯文本版用 /help text（方便复制）。
+
+    渲染失败 / 没装 Pillow → 退回纯文本，不让命令失败。
     """
     if not ctx.media_enabled:
-        return "发图功能已关闭。"
+        return HELP_TEXT
     if not ctx.render_available:
-        return "这台机器没装 Pillow，渲染不了图片。"
-
-    import tempfile
+        return HELP_TEXT
 
     from . import render
 
-    path = Path(tempfile.gettempdir()) / f"purana_help_{ctx.openid[-8:]}.png"
     try:
-        render.render_to_file(
-            HELP_TEXT, path, title="PURANA · 命令帮助", theme=ctx.render_theme
+        path = render.render_cached(
+            HELP_TEXT,
+            title="PURANA · 命令帮助",
+            theme=ctx.render_theme,
+            cache_dir=ctx.render_dir,
         )
     except Exception as exc:
-        log.warning("渲染帮助图失败：%s", exc)
+        log.warning("渲染帮助图失败，退回纯文本：%s", exc)
         return HELP_TEXT
 
     ctx.pending_media.append({"source": str(path), "kind": "image", "name": "help.png"})
-    return "命令列表（图版）："
+    # 空字符串 = 只发图，不发文字气泡（run.py 会识别）
+    return ""
 
 
 async def _handle_asimg(args: list[str], ctx: CommandContext) -> str:

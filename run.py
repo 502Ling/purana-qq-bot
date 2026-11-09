@@ -149,6 +149,7 @@ async def main() -> bool:
                     render_available=render.PIL_AVAILABLE,
                     asimg_title=settings.asimg_title,
                     render_theme=settings.render_theme,
+                    render_dir=settings.render_dir,
                 )
                 reply = await handle_command(r.payload, cmd)
                 return reply, cmd.restart_requested, list(cmd.pending_media)
@@ -507,25 +508,33 @@ async def main() -> bool:
             if not reply and not pending:
                 return
             token = await tokens.get(session)
-            status = await send_group_msg(
-                session, token, group_openid, reply, msg_id, msg_seq=1
-            )
-            if status >= 400:
-                log.warning("群命令被动回复失败（HTTP %s），改发主动消息", status)
-                await send_group_msg(session, token, group_openid, reply)
+            # ⚠️ 只有图没有文字时（/help 现在就是）**不要发空气泡**
+            #    —— 空 content 的消息 QQ 会显示成一个空白气泡。
+            if reply:
+                status = await send_group_msg(
+                    session, token, group_openid, reply, msg_id, msg_seq=1
+                )
+                if status >= 400:
+                    log.warning("群命令被动回复失败（HTTP %s），改发主动消息", status)
+                    await send_group_msg(session, token, group_openid, reply)
             log.info("群命令已回复：%s", text[:40])
 
-            # 附带的图（/image 命令）：用 msg_seq=2 接着发
+            # 附带的图（/help 现在就是纯图片）：接在文字后面发。
+            # ⚠️ msg_seq 要接着上一条用：
+            #    有文字 → 文字用了 seq=1，图用 seq=2；
+            #    没文字（只有图）→ 图就用 seq=1，不能占用一个空号。
+            seq = 2 if reply else 1
             for item in pending:
                 try:
                     await media.send_media_file(
                         session, token, media.SCOPE_GROUP, group_openid,
                         item["source"], kind=item.get("kind", "image"),
                         file_name=item.get("name", ""),
-                        msg_id=msg_id, msg_seq=2,
+                        msg_id=msg_id, msg_seq=seq,
                     )
                 except media.MediaError as exc:
                     log.warning("群命令发图失败：%s", exc)
+                seq += 1
 
         async def _handle_text(
             scene: str,

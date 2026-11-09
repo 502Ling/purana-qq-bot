@@ -472,6 +472,57 @@ def test_render() -> None:
             render.render_to_file("测试", p, title="T")
             check("存成 PNG", p.is_file() and p.stat().st_size > 0, f"实际 {p}")
 
+            # 9) 缓存：同一内容只渲染一次（路径相同）
+            p1 = render.render_cached("同样的内容", title="T", cache_dir=Path(td))
+            p2 = render.render_cached("同样的内容", title="T", cache_dir=Path(td))
+            check("渲染缓存命中", p1 == p2 and p1.is_file(), f"实际 {p1} vs {p2}")
+
+            # 10) 内容不同 → 缓存不串
+            p3 = render.render_cached("不同的内容", title="T", cache_dir=Path(td))
+            check("不同内容缓存不串", p3 != p1, f"实际 {p3}")
+
+
+async def test_help_image() -> None:
+    print("\n== /help 默认出图 ==")
+    import tempfile
+    from pathlib import Path
+
+    from bot import render
+    from bot.commands import CommandContext, handle
+
+    cache = Path(tempfile.gettempdir()) / "purana_selftest_cache"
+
+    # 1) /help → 图片（空文本回复）
+    ctx = CommandContext(openid="X", is_admin=True, media_enabled=True,
+                         render_available=render.PIL_AVAILABLE,
+                         render_theme="dark", render_dir=cache)
+    out = await handle("/help", ctx)
+    check("/help 默认出图", len(ctx.pending_media) == 1, f"实际 {ctx.pending_media}")
+    check("/help 文本回复为空（不刷屏）", out == "", f"实际 {out!r}")
+    if ctx.pending_media:
+        import os
+        p = ctx.pending_media[0]["source"]
+        check("/help 图已生成", os.path.isfile(p) and os.path.getsize(p) > 0, f"实际 {p}")
+
+    # 2) /help text → 纯文本，不出图
+    ctx2 = CommandContext(openid="X", is_admin=True, media_enabled=True,
+                          render_available=render.PIL_AVAILABLE)
+    out2 = await handle("/help text", ctx2)
+    check("/help text 是纯文本", "可用命令" in out2, f"实际 {out2[:40]!r}")
+    check("/help text 不出图", not ctx2.pending_media, f"实际 {ctx2.pending_media}")
+
+    # 3) 没装 Pillow → 退回纯文本（不能失败）
+    ctx3 = CommandContext(openid="X", is_admin=True, media_enabled=True,
+                          render_available=False)
+    out3 = await handle("/help", ctx3)
+    check("没 Pillow → 退回纯文本", "可用命令" in out3, f"实际 {out3[:40]!r}")
+
+    # 4) 发图总闸关了 → 退回纯文本
+    ctx4 = CommandContext(openid="X", is_admin=True, media_enabled=False,
+                          render_available=render.PIL_AVAILABLE)
+    out4 = await handle("/help", ctx4)
+    check("发图关闭 → 退回纯文本", "可用命令" in out4, f"实际 {out4[:40]!r}")
+
 
 def test_switch() -> None:
     print("\n== B站开关 ==")
@@ -505,6 +556,7 @@ async def main() -> int:
     test_bili_extract()
     await test_media()
     test_render()
+    await test_help_image()
     test_ecust_vision()
     test_switch()
     await test_admin_ids()

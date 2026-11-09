@@ -18,8 +18,10 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import logging
 import re
+import tempfile
 from ctypes import wintypes
 from pathlib import Path
 
@@ -306,4 +308,33 @@ def render_to_file(
     path.parent.mkdir(parents=True, exist_ok=True)
     img.save(path, format="PNG", optimize=True)
     log.info("文字渲染成图：%s（%sx%s）", path.name, img.width, img.height)
+    return path
+
+
+def render_cached(
+    text: str,
+    title: str = "",
+    width: int = 0,
+    theme: str = "dark",
+    cache_dir: Path | None = None,
+) -> Path:
+    """渲染成图，但**按内容缓存**——同一份内容只渲染一次。
+
+    为什么需要缓存：`/help` 每次都会调，但内容是固定的。
+    重复渲染既浪费 CPU（几百毫秒），又每次生成新文件。
+
+    缓存键 = 内容 + 标题 + 宽度 + 主题的哈希 —— 内容变了自然失效。
+    """
+    if cache_dir is None:
+        cache_dir = Path(tempfile.gettempdir()) / "purana_render_cache"
+
+    payload = f"{text}\x00{title}\x00{width}\x00{theme}"
+    key = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    path = cache_dir / f"{key}.png"
+
+    if path.is_file() and path.stat().st_size > 0:
+        log.debug("命中渲染缓存：%s", path.name)
+        return path
+
+    render_to_file(text, path, title=title, width=width, theme=theme)
     return path
