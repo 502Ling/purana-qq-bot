@@ -400,6 +400,49 @@ def test_ecust_vision() -> None:
     check("ask_content 存在", hasattr(client, "ask_content"))
 
 
+def test_render() -> None:
+    print("\n== 文字渲染成图 ==")
+    from bot import render
+
+    check("Pillow 可用", render.PIL_AVAILABLE)
+
+    # 1) emoji 要被去掉（雅黑渲染不了，会变豆腐块）
+    out = render.clean_text("emoji 🐟 测试")
+    check("emoji 被清理", "\U0001F41F" not in out, f"实际 {out!r}")
+    check("emoji 清理后文字还在", "测试" in out, f"实际 {out!r}")
+
+    # 2) 换行符统一
+    out = render.clean_text("a\r\nb\rc")
+    check("换行符统一为 \\n", out == "a\nb\nc", f"实际 {out!r}")
+
+    # 3) 英文单词不被拆开
+    toks = render._tokenize("Mixed 中英文 content 混排")
+    check("英文单词完整", "Mixed" in toks and "content" in toks, f"实际 {toks}")
+    check("中文逐字", "中" in toks and "排" in toks, f"实际 {toks}")
+
+    # 4) 渲染出图（尺寸合理、不报错）
+    if render.PIL_AVAILABLE:
+        img = render.render_text("hello 普拉娜\n第二行", title="测试")
+        check("渲染出图", img.width > 0 and img.height > 0, f"实际 {img.size}")
+        check("有标题栏时图更高",
+              render.render_text("x", title="T").height >
+              render.render_text("x").height,
+              "标题栏高度不对")
+
+        # 5) 长文本会折行（行数变多）
+        img2 = render.render_text("很长的文字" * 100)
+        check("长文本折行后变高", img2.height > render.render_text("短").height,
+              f"实际 {img2.size}")
+
+        # 6) 存文件
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "t.png"
+            render.render_to_file("测试", p, title="T")
+            check("存成 PNG", p.is_file() and p.stat().st_size > 0, f"实际 {p}")
+
+
 def test_switch() -> None:
     print("\n== B站开关 ==")
     import tempfile
@@ -431,6 +474,7 @@ async def main() -> int:
     await test_repeat()
     test_bili_extract()
     await test_media()
+    test_render()
     test_ecust_vision()
     test_switch()
     await test_admin_ids()

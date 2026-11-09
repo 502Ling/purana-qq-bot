@@ -1,11 +1,15 @@
 """本地斜杠命令：只在这里处理，永不转发给 agent。"""
 from __future__ import annotations
 
+import logging
 import os
 import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+log = logging.getLogger("purana.commands")
 
 # 中国没有夏令时，用固定 +08:00（比 ZoneInfo 稳：Windows 上 ZoneInfo 需要额外的 tzdata 包）
 TZ_CN = timezone(timedelta(hours=8))
@@ -79,6 +83,9 @@ class CommandContext:
     media_dir: object = None                    # 本地固定图片目录（Path）
     image_domains: tuple[str, ...] = ()         # 出站图片来源域名白名单
     pending_media: list = field(default_factory=list)   # 本次要发出去的图（路径或 URL）
+    render_available: bool = False              # 能不能把文字渲染成图（Pillow）
+    asimg_title: str = ""                       # /asimg 的标题（可留空）
+    render_theme: str = "dark"                  # 渲染配色（dark / light）
 
 
 def current_model(ctx: CommandContext) -> str:
@@ -129,7 +136,12 @@ async def handle(text: str, ctx: CommandContext) -> str:
             res += f"\nPhigros 4.0 已上线 {fmt_delta(-delta)}"
         return res
     if name == "help":
+        # /help img → 发图片版（文字太长时看着舒服）
+        if args and args[0].lower() in ("img", "image", "图片"):
+            return await _handle_help_image(ctx)
         return HELP_TEXT
+    if name == "asimg":
+        return await _handle_asimg(args, ctx)
     if name == "whoami":
         return await _handle_whoami(ctx)
     if name == "bili":
@@ -146,6 +158,73 @@ async def handle(text: str, ctx: CommandContext) -> str:
     if ctx.quiet_unknown:
         return ""   # 群里不 @ 时不刷屏
     return f"未知命令 /{name}，输入 /help 查看可用指令"
+
+
+async def _handle_help_image(ctx: CommandContext) -> str:
+    """/help img —— 把命令列表渲染成图片发出去。
+
+    文字版留着（方便复制）；图片版看着舒服（尤其在手机上）。
+    """
+    if not ctx.media_enabled:
+        return "发图功能已关闭。"
+    if not ctx.render_available:
+        return "这台机器没装 Pillow，渲染不了图片。"
+
+    import tempfile
+
+    from . import render
+
+    path = Path(tempfile.gettempdir()) / f"purana_help_{ctx.openid[-8:]}.png"
+    try:
+        render.render_to_file(
+            HELP_TEXT, path, title="PURANA · 命令帮助", theme=ctx.render_theme
+        )
+    except Exception as exc:
+        log.warning("渲染帮助图失败：%s", exc)
+        return HELP_TEXT
+
+    ctx.pending_media.append({"source": str(path), "kind": "image", "name": "help.png"})
+    return "命令列表（图版）："
+
+
+async def _handle_asimg(args: list[str], ctx: CommandContext) -> str:
+    """/asimg <文字> —— 把任意文字渲染成图片发出去。
+
+    用途：QQ 的纯文本消息又窄又长，长内容（比如命令列表、报错栈、表格）
+    渲染成图看着舒服多了。
+
+    只允许管理员 —— 这是个「把任意内容变成图」的能力，
+    公开放群里容易被拿去刷屏。
+    """
+    if not ctx.media_enabled:
+        return "发图功能已关闭。"
+    if not ctx.render_available:
+        return "这台机器没装 Pillow，渲染不了图片。"
+    if not ctx.is_admin:
+        return "只有管理员能用 /asimg。"
+    if not args:
+        return "用法：/asimg <要变成图片的文字>"
+
+    text = " ".join(args)
+    if len(text) > 4000:
+        return "文字太长了（上限 4000 字），截短了。"
+        text = text[:4000]
+
+    import tempfile
+
+    from . import render
+
+    path = Path(tempfile.gettempdir()) / f"purana_asimg_{ctx.openid[-8:]}.png"
+    try:
+        render.render_to_file(
+            text, path, title=ctx.asimg_title or "", theme=ctx.render_theme
+        )
+    except Exception as exc:
+        log.warning("渲染文字成图失败：%s", exc)
+        return "渲染失败，稍后再试。"
+
+    ctx.pending_media.append({"source": str(path), "kind": "image", "name": "asimg.png"})
+    return ""
 
 
 async def _handle_whoami(ctx: CommandContext) -> str:

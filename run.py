@@ -18,7 +18,7 @@ from typing import Any
 import aiohttp
 
 from bot.agent import AgentClient
-from bot import attachments, bili, media
+from bot import attachments, bili, media, render
 from bot.commands import CommandContext, handle as handle_command
 from bot.config import load_settings
 from bot.dispatch import Dispatcher
@@ -146,6 +146,9 @@ async def main() -> bool:
                     media_enabled=settings.media_enabled,
                     media_dir=settings.image_dir,
                     image_domains=settings.image_domains,
+                    render_available=render.PIL_AVAILABLE,
+                    asimg_title=settings.asimg_title,
+                    render_theme=settings.render_theme,
                 )
                 reply = await handle_command(r.payload, cmd)
                 return reply, cmd.restart_requested, list(cmd.pending_media)

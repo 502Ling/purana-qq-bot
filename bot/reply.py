@@ -53,14 +53,19 @@ async def deliver(
         log.exception("生成回复时出错")
         text = "抱歉，我这边出了点问题，稍后再试。"
 
-    if not text:
+    # 文本为空但有附加内容（比如只发图）→ 不发占位文本，直接发附加内容
+    if text:
+        await send(text, seq)
+        seq += 1
+    elif on_reply is None:
         text = "（空回复）"
-    await send(text, seq)
+        await send(text, seq)
+        seq += 1
 
     # 附加内容（发图等）：跟在文本后面，用下一个序号
     if on_reply is not None:
         try:
-            await on_reply(seq + 1)
+            await on_reply(seq)
         except asyncio.CancelledError:
             raise
         except Exception:

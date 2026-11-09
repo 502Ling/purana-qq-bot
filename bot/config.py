@@ -59,6 +59,10 @@ class Settings:
     image_dir: Path
     # 总闸：要不要开富媒体（发图）
     media_enabled: bool
+    # /asimg 渲染图片时的默认标题（可留空）
+    asimg_title: str
+    # 渲染图片的配色主题（dark / light）
+    render_theme: str
 
     @property
     def admin_openid(self) -> str:
@@ -136,4 +140,8 @@ def load_settings() -> Settings:
         # 富媒体总闸：0 = 关掉发图能力
         media_enabled=os.getenv("MEDIA_ENABLE", "1").strip().lower()
         not in ("0", "false", "off", "no"),
+        # /asimg 渲染出来的图片标题（留空 = 不显示标题栏）
+        asimg_title=os.getenv("ASIMG_TITLE", "").strip(),
+        # 渲染配色主题
+        render_theme=os.getenv("RENDER_THEME", "dark").strip().lower() or "dark",
     )
