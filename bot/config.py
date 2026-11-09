@@ -20,6 +20,14 @@ def _required(name: str) -> str:
     return value
 
 
+def _resolve_dir(value: str) -> Path:
+    """把目录配置转成绝对路径（相对路径按项目根算，不按当前工作目录）。"""
+    p = Path(value)
+    if not p.is_absolute():
+        p = (ROOT / p).resolve()
+    return p
+
+
 @dataclass(frozen=True)
 class Settings:
     # QQ 开放平台
@@ -81,7 +89,12 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    # ⚠️ 路径一律转成绝对路径：.env 里写的是相对路径（./data），
+    # 而进程的工作目录会变（dev.py / 计划任务 / 从别的目录启动），
+    # 相对路径会指向不同地方 → 找不到图片、缓存写错地方。
     data_dir = Path(os.getenv("DATA_DIR", str(ROOT / "data")))
+    if not data_dir.is_absolute():
+        data_dir = (ROOT / data_dir).resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
     return Settings(
         app_id=_required("QQ_APPID"),
@@ -138,7 +151,7 @@ def load_settings() -> Settings:
             if d.strip()
         ),
         # 固定图片目录（/image 命令从这里找图）
-        image_dir=Path(os.getenv("IMAGE_DIR", str(data_dir / "images"))),
+        image_dir=_resolve_dir(os.getenv("IMAGE_DIR", str(data_dir / "images"))),
         # 富媒体总闸：0 = 关掉发图能力
         media_enabled=os.getenv("MEDIA_ENABLE", "1").strip().lower()
         not in ("0", "false", "off", "no"),
@@ -147,5 +160,5 @@ def load_settings() -> Settings:
         # 渲染配色主题
         render_theme=os.getenv("RENDER_THEME", "dark").strip().lower() or "dark",
         # 渲染缓存目录（同一份内容只渲染一次）
-        render_dir=Path(os.getenv("RENDER_DIR", str(data_dir / "render_cache"))),
+        render_dir=_resolve_dir(os.getenv("RENDER_DIR", str(data_dir / "render_cache"))),
     )
