@@ -20,6 +20,7 @@ import aiohttp
 from bot.agent import AgentClient
 from bot import attachments, bili, media, render
 from bot.commands import CommandContext, handle as handle_command
+from bot.phigros import paths as pgr_paths
 from bot.config import load_settings
 from bot.dispatch import Dispatcher
 from bot.ecust import EcustClient
@@ -68,6 +69,20 @@ async def main() -> bool:
         settings.image_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
         log.warning("图片目录创建失败：%s", settings.image_dir)
+
+    # Phigros 资源根目录（曲库+曲绘，共享一份）
+    # ⚠️ 没配就**不开** Phigros 功能，不报错、不影响其他功能。
+    pgr_ok = False
+    if settings.pgr_data_root:
+        pgr_paths.configure(settings.pgr_data_root)
+        err = pgr_paths.status()
+        if err:
+            log.warning("Phigros 资源不可用：%s", err)
+        else:
+            pgr_ok = True
+            log.info("Phigros 资源已就绪：%s", settings.pgr_data_root)
+    else:
+        log.info("未配置 PGR_DATA_ROOT，Phigros 功能关闭")
     bili_switch = bili.BiliSwitch(
         settings.data_dir / "bili_off.json",
         settings.bili_enabled,
@@ -150,6 +165,7 @@ async def main() -> bool:
                     asimg_title=settings.asimg_title,
                     render_theme=settings.render_theme,
                     render_dir=settings.render_dir,
+                    pgr_enabled=pgr_ok,
                 )
                 reply = await handle_command(r.payload, cmd)
                 return reply, cmd.restart_requested, list(cmd.pending_media)
@@ -233,6 +249,7 @@ async def main() -> bool:
                             file_name=item.get("name", ""),
                             msg_id=msg_id,
                             msg_seq=seq,
+                            content=item.get("caption", ""),
                             msg_ref_id=msg_ref_id,
                         )
                     except media.MediaError as exc:
@@ -531,6 +548,7 @@ async def main() -> bool:
                         item["source"], kind=item.get("kind", "image"),
                         file_name=item.get("name", ""),
                         msg_id=msg_id, msg_seq=seq,
+                        content=item.get("caption", ""),
                     )
                 except media.MediaError as exc:
                     log.warning("群命令发图失败：%s", exc)

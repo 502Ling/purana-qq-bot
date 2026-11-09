@@ -35,6 +35,7 @@ HELP_TEXT = """可用命令：
 /time - 显示当前时间（含 Phigros 4.0 倒计时）
 /choose <选项1> <选项2> [...] - 从选项里随机选一个（最多 {CHOOSE_MAX} 个）
 /whoami - 显示你的 openid（加管理员白名单用）
+/pgr song <曲名> - 查 Phigros 曲库（详见 /pgr help）
 /help text - 显示本帮助的纯文本版
 —— 以下仅管理员 ——
 /test502 - 测试机器人是否在线
@@ -55,7 +56,9 @@ HELP_TEXT = """可用命令：
 def public_commands() -> set[str]:
     return {
         c.strip().lower()
-        for c in os.getenv("PUBLIC_COMMANDS", "help,time,choose,echo,whoami").split(",")
+        for c in os.getenv(
+            "PUBLIC_COMMANDS", "help,time,choose,echo,whoami,pgr"
+        ).split(",")
         if c.strip()
     }
 
@@ -89,6 +92,7 @@ class CommandContext:
     asimg_title: str = ""                       # /asimg 的标题（可留空）
     render_theme: str = "dark"                  # 渲染配色（dark / light）
     render_dir: object = None                   # 渲染缓存目录（Path）
+    pgr_enabled: bool = False                   # Phigros 功能是否可用（曲库配好了）
 
 
 def current_model(ctx: CommandContext) -> str:
@@ -152,6 +156,8 @@ async def handle(text: str, ctx: CommandContext) -> str:
         return await _handle_bili(args, ctx)
     if name == "image":
         return await _handle_image(args, ctx)
+    if name == "pgr":
+        return await _handle_pgr(args, ctx)
     if name == "restart":
         if not ctx.is_admin:
             return "只有管理员能重启机器人"
@@ -233,6 +239,31 @@ async def _handle_asimg(args: list[str], ctx: CommandContext) -> str:
 
     ctx.pending_media.append({"source": str(path), "kind": "image", "name": "asimg.png"})
     return ""
+
+
+async def _handle_pgr(args: list[str], ctx: CommandContext) -> str:
+    """/pgr —— Phigros 工具（查曲 / 随机 / 定数 / 音符 / 曲绘）。
+
+    **只包含不依赖玩家存档的功能** —— 曲库和曲绘都是共享的本地文件，
+    不需要登录、不需要学校 API、也不联网。
+
+    曲绘图会通过 ctx.pending_media 发出去（走 PURANA 的富媒体管道）。
+    """
+    if not ctx.pgr_enabled:
+        return "Phigros 功能没配：.env 里设 PGR_DATA_ROOT（曲库+曲绘所在目录）。"
+
+    from .phigros import commands as pgr
+
+    res = pgr.handle(args, is_admin=ctx.is_admin)
+
+    if res.image:
+        ctx.pending_media.append({
+            "source": res.image,
+            "kind": "image",
+            "name": "",
+            "caption": res.caption,
+        })
+    return res.text
 
 
 async def _handle_whoami(ctx: CommandContext) -> str:

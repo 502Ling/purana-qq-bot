@@ -524,6 +524,99 @@ async def test_help_image() -> None:
     check("发图关闭 → 退回纯文本", "可用命令" in out4, f"实际 {out4[:40]!r}")
 
 
+def test_phigros() -> None:
+    print("\n== Phigros（不依赖存档的那部分）==")
+    import os
+    import tempfile
+    from pathlib import Path
+
+    from bot.phigros import commands as pgr, data, illus, notes, paths
+
+    # 1) 没配 PGR_DATA_ROOT → 状态提示明确
+    paths.configure("")
+    paths._ROOT = None
+    err = paths.status()
+    check("没配资源根 → 有明确提示", "PGR_DATA_ROOT" in err, f"实际 {err!r}")
+
+    # 2) 配了但目录不存在 → 提示明确
+    with tempfile.TemporaryDirectory() as td:
+        paths.configure(td)
+        err2 = paths.status()
+        check("目录不存在 → 有明确提示", "不存在" in err2, f"实际 {err2!r}")
+
+    # 3) 没配时命令不崩，给提示
+    r = pgr.handle(["song", "test"])
+    check("没配时命令有提示不崩", bool(r.text), f"实际 {r.text!r}")
+
+    # 4) 如果本机有共享曲库（.env 里的 PGR_DATA_ROOT），跑真实查询
+    root = os.getenv("PGR_DATA_ROOT", "").strip()
+    if not root:
+        print("  (跳过：本机未配 PGR_DATA_ROOT)")
+        return
+    paths.configure(root)
+    check("配了 → 状态正常", paths.status() == "", f"实际 {paths.status()!r}")
+
+    data.maybe_reload()
+    check("曲库有歌", len(data.SONGS) > 0, f"实际 {len(data.SONGS)}")
+
+    # 5) 查曲
+    hits = data.find("a")
+    check("模糊查曲有结果", len(hits) > 0, f"实际 {len(hits)}")
+
+    # 6) 查不存在的歌 → 空
+    check("查不存在 → 空", data.find("zzzzzzzznotexist") == [])
+
+    # 7) random 返回合法歌曲
+    s = data.random_song()
+    check("random 有结果", s is not None and bool(s.name), f"实际 {s}")
+
+    # 8) hardest 按定数降序
+    rows = data.hardest("IN", 5)
+    check("hardest 返回 5 首", len(rows) == 5, f"实际 {len(rows)}")
+    if len(rows) >= 2:
+        check("hardest 按定数降序",
+              rows[0].const_of("IN") >= rows[1].const_of("IN"),
+              f"实际 {rows[0].const_of('IN')} vs {rows[1].const_of('IN')}")
+
+    # 9) 曲绘能查到
+    check("曲绘目录有内容", illus.count() > 0, f"实际 {illus.count()}")
+
+    # 10) 命令层：help
+    r = pgr.handle(["help"])
+    check("/pgr help 有内容", "Phigros" in r.text, f"实际 {r.text[:40]!r}")
+
+    # 11) 命令层：未知子命令
+    r2 = pgr.handle(["zzzz"])
+    check("未知子命令有提示", "不认识" in r2.text, f"实际 {r2.text!r}")
+
+    # 12) 命令层：cover 返回图 + caption
+    with_img = None
+    for song in data.SONGS:
+        res = pgr.handle(["cover", song.name])
+        if res.image:
+            with_img = res
+            break
+    check("cover 能找到曲绘", with_img is not None and bool(with_img.image),
+          f"实际 {with_img}")
+    if with_img:
+        check("cover 图文件存在", Path(with_img.image).is_file(), f"实际 {with_img.image}")
+        check("cover 有 caption", bool(with_img.caption), f"实际 {with_img.caption!r}")
+
+    # 13) alias 非管理员被拒
+    r3 = pgr.handle(["alias", "x", "y"], is_admin=False)
+    check("alias 非管理员被拒", "管理员" in r3.text, f"实际 {r3.text!r}")
+
+    # 14) notes 未覆盖的难度要说清楚（不显示 0/0/0/0）
+    empty = None
+    for song in data.SONGS:
+        res = pgr.handle(["notes", song.name, "AT"])
+        if "未覆盖" in res.text:
+            empty = res
+            break
+    if empty:
+        check("未覆盖难度不显示 0/0/0/0", "0/0/0/0" not in empty.text, f"实际 {empty.text!r}")
+
+
 def test_switch() -> None:
     print("\n== B站开关 ==")
     import tempfile
@@ -557,6 +650,7 @@ async def main() -> int:
     await test_media()
     test_render()
     await test_help_image()
+    test_phigros()
     test_ecust_vision()
     test_switch()
     await test_admin_ids()

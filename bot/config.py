@@ -73,6 +73,8 @@ class Settings:
     render_theme: str
     # 渲染图片的缓存目录（按内容哈希命名，重复内容不重复渲染）
     render_dir: Path
+    # Phigros 资源根目录（曲库 + 曲绘）；空 = 不开 Phigros 功能
+    pgr_data_root: str
 
     @property
     def admin_openid(self) -> str:
@@ -137,7 +139,9 @@ def load_settings() -> Settings:
         not in ("0", "false", "off", "no"),
         group_commands=tuple(
             c.strip().lower()
-            for c in os.getenv("GROUP_COMMANDS", "help,time,choose,echo,whoami").split(",")
+            for c in os.getenv(
+                "GROUP_COMMANDS", "help,time,choose,echo,whoami,pgr"
+            ).split(",")
             if c.strip()
         ),
 
@@ -161,4 +165,7 @@ def load_settings() -> Settings:
         render_theme=os.getenv("RENDER_THEME", "dark").strip().lower() or "dark",
         # 渲染缓存目录（同一份内容只渲染一次）
         render_dir=_resolve_dir(os.getenv("RENDER_DIR", str(data_dir / "render_cache"))),
+        # Phigros 资源根目录（曲库+曲绘，共享一份，不复制）
+        # ⚠️ 代码里**不写死**机器路径 —— 真实路径放 .env，提交后别人 clone 也不带本地路径。
+        pgr_data_root=os.getenv("PGR_DATA_ROOT", "").strip(),
     )
