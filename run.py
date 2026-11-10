@@ -20,6 +20,7 @@ import aiohttp
 from bot.agent import AgentClient
 from bot import attachments, bili, media, render
 from bot.commands import CommandContext, handle as handle_command
+from bot.pool import POOLS
 from bot.phigros import paths as pgr_paths
 from bot.config import load_settings
 from bot.dispatch import Dispatcher
@@ -70,6 +71,22 @@ async def main() -> bool:
     except OSError:
         log.warning("图片目录创建失败：%s", settings.image_dir)
 
+    # 随机图片池（/img <池子名>）—— 子目录 = 池子
+    try:
+        settings.pool_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        log.warning("图片池目录创建失败：%s", settings.pool_dir)
+    POOLS.configure(
+        settings.pool_dir,
+        aliases=settings.pool_aliases,
+        default_pool=settings.pool_default,
+    )
+    pool_count = len(POOLS.pools(force=True))
+    if pool_count:
+        log.info("图片池已就绪：%s（%s 个池子）", settings.pool_dir, pool_count)
+    else:
+        log.info("图片池目录是空的：%s（把图丢进子目录即可用）", settings.pool_dir)
+
     # Phigros 资源根目录（曲库+曲绘，共享一份）
     # ⚠️ 没配就**不开** Phigros 功能，不报错、不影响其他功能。
     pgr_ok = False
@@ -98,6 +115,11 @@ async def main() -> bool:
     restart_event = asyncio.Event()
     dispatcher = Dispatcher(MAX_CONCURRENT)
     rate_limit = RateLimiter(RAW_RATE_LIMIT, RAW_RATE_WINDOW)
+    # /img 防刷：非管理员每人每 POOL_RATE_WINDOW 秒最多 POOL_RATE_LIMIT 次
+    pool_rate_limit = RateLimiter(
+        int(os.getenv("POOL_RATE_LIMIT", "5")),
+        float(os.getenv("POOL_RATE_WINDOW", "60")),
+    )
 
     def is_admin_of(
         author_ids: tuple[str, ...],
@@ -166,6 +188,8 @@ async def main() -> bool:
                     render_theme=settings.render_theme,
                     render_dir=settings.render_dir,
                     pgr_enabled=pgr_ok,
+                    pool_enabled=True,
+                    pool_rate_limit=pool_rate_limit,
                 )
                 reply = await handle_command(r.payload, cmd)
                 return reply, cmd.restart_requested, list(cmd.pending_media)

@@ -387,6 +387,106 @@ async def test_media() -> None:
         check("/image 目录穿越拒绝", "不接受路径" in out and not ctx.pending_media, f"实际 {out}")
 
 
+async def test_pool() -> None:
+    print("\n== 随机图片池（/img）==")
+    import tempfile
+    from pathlib import Path
+
+    from bot.commands import CommandContext, handle
+    from bot.pool import POOLS, PoolError, parse_aliases
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "表情包").mkdir()
+        (root / "壁纸").mkdir()
+        (root / "空池").mkdir()
+        # 两张能发的 png + 一张发不了的 gif + 一个非图片文件
+        (root / "表情包" / "a.png").write_bytes(b"x")
+        (root / "表情包" / "b.jpg").write_bytes(b"x")
+        (root / "表情包" / "c.gif").write_bytes(b"x")
+        (root / "表情包" / "readme.txt").write_text("x", encoding="utf-8")
+        (root / "壁纸" / "w.png").write_bytes(b"x")
+
+        POOLS.configure(root, aliases=parse_aliases("表情=表情包"), default_pool="表情包")
+
+        # 1) 扫池子：gif 不算可发图片，txt 不算
+        pools = POOLS.pools(force=True)
+        check("扫到两个池子", set(pools) == {"表情包", "壁纸", "空池"}, f"实际 {list(pools)}")
+        check("png/jpg 算可发", pools["表情包"].count == 2, f"实际 {pools['表情包'].count}")
+        check("gif 单独归类", len(pools["表情包"].others) == 1, f"实际 {pools['表情包'].others}")
+        check("txt 被跳过", pools["表情包"].skipped == 1, f"实际 {pools['表情包'].skipped}")
+
+        # 2) 别名解析
+        check("别名能命中", POOLS.resolve("表情") == "表情包", f"实际 {POOLS.resolve('表情')}")
+        check("完全同名能命中", POOLS.resolve("壁纸") == "壁纸")
+        check("忽略大小写能命中", POOLS.resolve("表情包") == "表情包")
+        check("找不到返回 None", POOLS.resolve("不存在的池子") is None)
+
+        # 3) 唯一包含匹配
+        check("唯一包含匹配", POOLS.resolve("壁") == "壁纸", f"实际 {POOLS.resolve('壁')}")
+
+        # 4) /img 命令：随机抽一张
+        ctx = CommandContext(openid="X", is_admin=True, media_enabled=True)
+        out = await handle("/img 表情包", ctx)
+        check("/img 抽到图", len(ctx.pending_media) == 1, f"实际 {out} {ctx.pending_media}")
+        if ctx.pending_media:
+            src = Path(ctx.pending_media[0]["source"])
+            check("/img 图存在", src.is_file(), f"实际 {src}")
+            check("/img 图在池子里", src.parent.name == "表情包", f"实际 {src}")
+            check("/img 图是可发格式", src.suffix.lower() in (".png", ".jpg", ".jpeg"), f"实际 {src}")
+
+        # 5) /img 不带参数 → 用默认池子
+        ctx = CommandContext(openid="X", is_admin=True, media_enabled=True)
+        out = await handle("/img", ctx)
+        check("/img 默认池子", len(ctx.pending_media) == 1, f"实际 {out}")
+
+        # 6) /img list → 列出池子
+        ctx = CommandContext(openid="X", is_admin=True, media_enabled=True)
+        out = await handle("/img list", ctx)
+        check("/img list 列出池子", "表情包" in out and "壁纸" in out, f"实际 {out}")
+
+        # 7) 池子不存在 → 友好提示（带相近名字）
+        ctx = CommandContext(openid="X", is_admin=True, media_enabled=True)
+        out = await handle("/img 不存在", ctx)
+        check("/img 池子不存在有提示", "没有叫" in out and not ctx.pending_media, f"实际 {out}")
+
+        # 8) 空池子 → 提示
+        ctx = CommandContext(openid="X", is_admin=True, media_enabled=True)
+        out = await handle("/img 空池", ctx)
+        check("/img 空池提示", "空的" in out and not ctx.pending_media, f"实际 {out}")
+
+        # 9) 发图总闸关了
+        ctx = CommandContext(openid="X", is_admin=True, media_enabled=False)
+        out = await handle("/img 表情包", ctx)
+        check("/img 总闸关", "已关闭" in out and not ctx.pending_media, f"实际 {out}")
+
+        # 10) 别名解析函数本身
+        al = parse_aliases("a=b, c = d ,,=x,y=")
+        check("别名解析", al == {"a": "b", "c": "d"}, f"实际 {al}")
+
+        POOLS.configure(None)
+
+
+async def test_pool_gif_only() -> None:
+    print("\n== 图片池：只有 gif 的池子 ==")
+    import tempfile
+    from pathlib import Path
+
+    from bot.pool import POOLS, PoolError
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "动图").mkdir()
+        (root / "动图" / "a.gif").write_bytes(b"x")
+        POOLS.configure(root)
+        try:
+            POOLS.pick("动图")
+            check("只有 gif → 报错", False, "居然没报错")
+        except PoolError as exc:
+            check("只有 gif → 提示转格式", "gif" in str(exc) and "png" in str(exc), f"实际 {exc}")
+        POOLS.configure(None)
+
+
 def test_ecust_vision() -> None:
     print("\n== ECUST 视觉（构造请求体，不联网）==")
     from bot.ecust import EcustClient
@@ -648,6 +748,8 @@ async def main() -> int:
     await test_repeat()
     test_bili_extract()
     await test_media()
+    await test_pool()
+    await test_pool_gif_only()
     test_render()
     await test_help_image()
     test_phigros()

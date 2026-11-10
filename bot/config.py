@@ -28,6 +28,24 @@ def _resolve_dir(value: str) -> Path:
     return p
 
 
+def parse_pool_aliases(raw: str) -> dict[str, str]:
+    """解析图片池别名：``猫=表情包,表情=表情包``。
+
+    放在 config 里而不是 pool.py，是为了让 .env 的解析只有一处。
+    真正的别名解析（含链式追别名）在 bot/pool.py 的 PoolManager 里。
+    """
+    out: dict[str, str] = {}
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item or "=" not in item:
+            continue
+        left, right = item.split("=", 1)
+        left, right = left.strip(), right.strip()
+        if left and right:
+            out[left.lower()] = right
+    return out
+
+
 @dataclass(frozen=True)
 class Settings:
     # QQ 开放平台
@@ -75,6 +93,12 @@ class Settings:
     render_dir: Path
     # Phigros 资源根目录（曲库 + 曲绘）；空 = 不开 Phigros 功能
     pgr_data_root: str
+    # 图片池根目录（子目录 = 池子）；空 = 不开随机图片池
+    pool_dir: Path
+    # 图片池别名（别名=池子名，逗号分隔）
+    pool_aliases: dict[str, str]
+    # 默认池子（/img 不带参数时用这个）
+    pool_default: str
 
     @property
     def admin_openid(self) -> str:
@@ -168,4 +192,10 @@ def load_settings() -> Settings:
         # Phigros 资源根目录（曲库+曲绘，共享一份，不复制）
         # ⚠️ 代码里**不写死**机器路径 —— 真实路径放 .env，提交后别人 clone 也不带本地路径。
         pgr_data_root=os.getenv("PGR_DATA_ROOT", "").strip(),
+        # 图片池根目录（子目录 = 池子，/img <池子名> 随机抽一张）
+        pool_dir=_resolve_dir(os.getenv("POOL_DIR", str(data_dir / "pool"))),
+        # 池子别名：猫=表情包,表情=表情包
+        pool_aliases=parse_pool_aliases(os.getenv("POOL_ALIASES", "")),
+        # /img 不带参数时用哪个池子（留空 = 必须带池子名）
+        pool_default=os.getenv("POOL_DEFAULT", "").strip(),
     )

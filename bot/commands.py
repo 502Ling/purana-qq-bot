@@ -47,6 +47,7 @@ HELP_TEXT = """可用命令：
 /bili - 查看 / 开关本群的 B 站识别
 /asimg <文字> - 把文字渲染成图片发出来
 /image <网址|图片名> - 发指定图片
+/img <池子名> - 随机发一张池子里的图（/img list 看有哪些池子）
 /restart - 重启机器人""".format(CHOOSE_MAX=CHOOSE_MAX)
 
 
@@ -57,7 +58,7 @@ def public_commands() -> set[str]:
     return {
         c.strip().lower()
         for c in os.getenv(
-            "PUBLIC_COMMANDS", "help,time,choose,echo,whoami,pgr"
+            "PUBLIC_COMMANDS", "help,time,choose,echo,whoami,pgr,img"
         ).split(",")
         if c.strip()
     }
@@ -93,6 +94,8 @@ class CommandContext:
     render_theme: str = "dark"                  # 渲染配色（dark / light）
     render_dir: object = None                   # 渲染缓存目录（Path）
     pgr_enabled: bool = False                   # Phigros 功能是否可用（曲库配好了）
+    pool_enabled: bool = False                  # 随机图片池是否可用
+    pool_rate_limit: object = None              # /img 防刷限流（bot.ratelimit.RateLimiter）
 
 
 def current_model(ctx: CommandContext) -> str:
@@ -156,6 +159,8 @@ async def handle(text: str, ctx: CommandContext) -> str:
         return await _handle_bili(args, ctx)
     if name == "image":
         return await _handle_image(args, ctx)
+    if name == "img":
+        return await _handle_img(args, ctx)
     if name == "pgr":
         return await _handle_pgr(args, ctx)
     if name == "restart":
@@ -370,6 +375,45 @@ async def _handle_image(args: list[str], ctx: CommandContext) -> str:
             return "图来了。"
 
     return f"没找到 {target}（在 {media_dir} 里）"
+
+
+async def _handle_img(args: list[str], ctx: CommandContext) -> str:
+    """/img <池子名> —— 随机发一张池子里的图。
+
+    池子 = 图片池根目录下的一个子目录（图丢进去就行，不用改代码）。
+    典型用法：/img 表情包、/img 壁纸、/img list（看有哪些池子）。
+
+    与 /image 的区别：/image 要报精确文件名，/img 随机抽——
+    表情包/壁纸这类图多、记不住名字的场景用 /img。
+    """
+    if not ctx.media_enabled:
+        return "发图功能已关闭。"
+
+    from .pool import POOLS, PoolError
+
+    # /img list —— 看有哪些池子
+    if args and args[0].lower() in ("list", "列表", "ls"):
+        return POOLS.summary()
+
+    # 防刷：非管理员限流（发图会占 QQ 的主动消息频次）
+    if ctx.pool_rate_limit is not None and not ctx.is_admin:
+        allowed, wait = ctx.pool_rate_limit.check(ctx.openid)
+        if not allowed:
+            return f"发得太快了，{max(1, round(wait))} 秒后再试。"
+
+    name = args[0].strip() if args else ""
+    try:
+        path, pool_name = POOLS.pick(name)
+    except PoolError as exc:
+        return str(exc)
+
+    ctx.pending_media.append({
+        "source": str(path),
+        "kind": "image",
+        "name": path.name,
+        "caption": f"「{pool_name}」· {path.name}",
+    })
+    return ""
 
 
 def _host_allowed(url: str, domains: tuple[str, ...]) -> bool:
