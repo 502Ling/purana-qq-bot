@@ -36,6 +36,7 @@ HELP_TEXT = """可用命令：
 /choose <选项1> <选项2> [...] - 从选项里随机选一个（最多 {CHOOSE_MAX} 个）
 /whoami - 显示你的 openid（加管理员白名单用）
 /pgr song <曲名> - 查 Phigros 曲库（详见 /pgr help）
+/img <池子名> - 随机发一张池子里的图（/img list 看有哪些池子）
 /help text - 显示本帮助的纯文本版
 —— 以下仅管理员 ——
 /test502 - 测试机器人是否在线
@@ -47,7 +48,6 @@ HELP_TEXT = """可用命令：
 /bili - 查看 / 开关本群的 B 站识别
 /asimg <文字> - 把文字渲染成图片发出来
 /image <网址|图片名> - 发指定图片
-/img <池子名> - 随机发一张池子里的图（/img list 看有哪些池子）
 /restart - 重启机器人""".format(CHOOSE_MAX=CHOOSE_MAX)
 
 
