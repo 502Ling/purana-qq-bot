@@ -83,7 +83,7 @@ python -m venv venv
 - 子进程崩了自动拉起，且**退避重试**（1→2→4→8→16→30s 封顶，连崩 5 次会提醒）
 - 子进程**正常退出（如 `/restart`）→ 1 秒后直接拉起**，不当崩溃处理
 - 按 **Esc** 退出（会关掉子进程）
-- 子进程里的 Esc 退出会被自动禁用（注入 `NICO_NO_ESC=1`），免得两个进程抢键盘
+- 子进程里的 Esc 退出会被自动禁用（注入 `PURANA_NO_ESC=1`），免得两个进程抢键盘
 
 配置在 `.env`（照着 `.env.example` 填；`.env` 不进 git）。
 
@@ -138,7 +138,7 @@ BV1GUH56pEHj
 - **默认不带 URL**：QQ 会把 bilibili.com 的链接渲染成小程序预览（点进去是 B 站小程序，
   不是 APP），而这里的目的就是拿到能复制的 BV 号。需要链接时置 `BILI_LINK=1`
 - 想发图文卡片（带封面）置 `BILI_CARD=1`（默认 0）
-- 官方协议**没有** OneBot 那套 `raw_message` / CQ 码，所以不能照抄 Nico 版。
+- 官方协议**没有** OneBot 那套 `raw_message` / CQ 码，所以不能照抄那套解析。
   这里的做法是**在事件数据里到处找链接**：`content` / `ark_data.fields.jump_url` /
   `msg_elements[]`（引用消息）/ `attachments[].url`
 - 短链（b23.tv）跟一次 302 拿 BV 号（只读 Location，不下载页面）；结果按短链缓存
@@ -305,7 +305,7 @@ QQ 的纯文本消息又窄又长，长内容看着费劲。把文字渲染成�
 直接引用一份共享的数据 —— 由 `.env` 的 `PGR_DATA_ROOT` 指定：
 
 ```
-PGR_DATA_ROOT=D:\CIC\QQbot\Nico_21599
+PGR_DATA_ROOT=/path/to/your/phigros-data
 ```
 
 该目录下要有 `resources/phigros/` 和 `resources/Illustration/`。
@@ -313,25 +313,24 @@ PGR_DATA_ROOT=D:\CIC\QQbot\Nico_21599
 **为什么这样设计**：
 
 - 复制一份 = 双份维护 + 多占 772MB（曲绘）—— 不可取
-- 引用 = 一处维护，两边（普拉娜 / Nico）看到的永远是同一份数据
+- 引用 = 一处维护，所有部署看到的永远是同一份数据
 - **代码里不写死机器路径** —— 真实路径在 `.env`（不进 git），
   所以提交上去不含任何本地路径，别人 clone 下来填自己的路径即可
 
-> ⚠️ **以后的演进路线**（502 定的）：把曲库数据单独挪到中立目录
-> （比如 `D:\CIC\QQbot\phigros-data\`），让 Nico 和普拉娜**都**引用它
-> → 就彻底跟 Nico 没关系了。因为代码走的是配置驱动，
+> ⚠️ **以后的演进路线**（502 定的）：把曲库数据单独挪到中立目录，
+> 让所有部署**都**引用它。因为代码走的是配置驱动，
 > **搬家时只改 `.env` 一行，代码不用动**。
 
-#### 从 Nico_21599 移植时的改动
+#### 移植时的改动
 
 1. **路径不写死** —— 原来硬编码 `resources/`，现在从 `PGR_DATA_ROOT` 解析
 2. **砍掉依赖存档的子命令** —— bind / unbind / refresh / info / b30 / b30img /
    rks / score / grade 全部没搬（要登录 + 拉云端存档，牵扯账号体系）
-3. **发图走官方协议** —— Nico 用 NapCat 的 CQ 码，这里走 `msg_type=7`
+3. **发图走官方协议** —— 官方接口只认 `msg_type=7`
    （复用富媒体管道；大图自动走分片上传，>5MB）
 4. **不发合并转发** —— 官方协议那套接口这次不碰，文字直接回
 
-曲绘是**只读**的，绝不写 Nico 的目录。唯一的写操作是 `/pgr alias`
+曲绘是**只读**的，绝不写共享目录。唯一的写操作是 `/pgr alias`
 （往共享 CSV 追加别名 —— 写的是同一份，所以两边互相可见）。
 
 ### 群里发命令
@@ -399,8 +398,8 @@ Windows 的 vbs 把进程挂在一个隐藏控制台上。
 - 启动：双击 `run_hidden.vbs`
 - 停止：双击 `stop.cmd`（隐藏运行后没有 Esc 可用）
 - 看状态：双击 `status.cmd`（在看跑不跑 + 两个日志的尾巴）
-- 看日志：双击 `logs.cmd`（实时滚 `nico.log`）；`logs.cmd dev` 看 `data\dev.log`
-- 日志：`data\dev.log`（监督进程输出，UTF-8）+ `data\logs\nico.log`（bot 自己，UTF-8，2MB × 5 份轮转）
+- 看日志：双击 `logs.cmd`（实时滚 `purana.log`）；`logs.cmd dev` 看 `data\dev.log`
+- 日志：`data\dev.log`（监督进程输出，UTF-8）+ `data\logs\purana.log`（bot 自己，UTF-8，2MB × 5 份轮转）
 
 ⚠️ `.cmd` / `.vbs` 里**只能写纯 ASCII**：cmd 按 GBK 读批处理，UTF-8 中文会把行读乱（已踩：stop.cmd 报“此时不应有 )”）。中文只出现在程序输出里。
 
