@@ -26,6 +26,11 @@ resources/ChapterCover/
 .vscode/
 .idea/
 
+# ===== 个人笔记 / 内部规划（不进公开仓库）=====
+# docs/ 里是工作笔记：含本地绝对路径、小号/封号风险等内部信息。
+# 仓库是公开的（private: false），所以这些留在本地就行。
+docs/
+
 # ===== Windows =====
 *.lnk
 *.bak
